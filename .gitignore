@@ -1,0 +1,10 @@
+mod/bin/
+mod/obj/
+.env
+tmp/
+server/data/
+server/tmp/
+server/.pytest_cache/
+server/**/__pycache__/
+*.pdb
+deploy.sh
