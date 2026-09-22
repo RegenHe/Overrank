@@ -71,7 +71,7 @@ namespace Overrank
                 + "?players=" + players
                 + "&metric=" + UnityWebRequest.EscapeURL(metric)
                 + "&player_id=" + UnityWebRequest.EscapeURL(playerId)
-                + "&limit=10&around=3";
+                + "&limit=100&around=100";
             _host.StartCoroutine(GetJson(url, callback));
         }
 

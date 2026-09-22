@@ -44,6 +44,8 @@ namespace Overrank
         private string _metric = "score";
         private int _players = 1;
         private int _levelsPage;
+        private Vector2 _topScroll;
+        private Vector2 _nearbyScroll;
         private float _nextIdentityRefresh;
         private float _lastCaptureTime = -100f;
         private string _lastCaptureFingerprint;
@@ -493,11 +495,24 @@ namespace Overrank
             LeaderboardEntry[] nearby = _leaderboard == null || _leaderboard.nearby == null
                 ? new LeaderboardEntry[0]
                 : _leaderboard.nearby;
-            DrawEntries(new Rect(panel.x + 22f, bodyTop + 28f, columnWidth - 16f, 240f), top);
-            DrawEntries(new Rect(panel.x + 36f + columnWidth, bodyTop + 28f, columnWidth - 16f, 240f), nearby);
+            int totalPlayers = _leaderboard == null ? 0 : _leaderboard.total_players;
+            DrawEntries(
+                new Rect(panel.x + 22f, bodyTop + 28f, columnWidth - 16f, 240f),
+                top,
+                ref _topScroll,
+                totalPlayers);
+            DrawEntries(
+                new Rect(panel.x + 36f + columnWidth, bodyTop + 28f, columnWidth - 16f, 240f),
+                nearby,
+                ref _nearbyScroll,
+                totalPlayers);
         }
 
-        private void DrawEntries(Rect area, LeaderboardEntry[] entries)
+        private void DrawEntries(
+            Rect area,
+            LeaderboardEntry[] entries,
+            ref Vector2 scrollPosition,
+            int totalPlayers)
         {
             if (entries.Length == 0)
             {
@@ -506,7 +521,10 @@ namespace Overrank
                     OverrankText.Get("No scores for this selection", "当前条件下暂无成绩"));
                 return;
             }
-            int count = Mathf.Min(entries.Length, 10);
+            int count = Mathf.Min(entries.Length, 100);
+            const float rowHeight = 22f;
+            Rect content = new Rect(0f, 0f, area.width - 18f, Mathf.Max(area.height, count * rowHeight));
+            scrollPosition = GUI.BeginScrollView(area, scrollPosition, content, false, true);
             for (int index = 0; index < count; index++)
             {
                 LeaderboardEntry entry = entries[index];
@@ -517,13 +535,19 @@ namespace Overrank
                     GUI.color = new Color(0.55f, 1f, 0.75f, 1f);
                 }
                 string value = OverrankText.IsSimplifiedChinese
-                    ? "分数:" + entry.score + "  菜数:" + entry.dishes
-                    : "Score:" + entry.score + "  Dishes:" + entry.dishes;
+                    ? "分:" + entry.score + " 菜:" + entry.dishes
+                    : "S:" + entry.score + " D:" + entry.dishes;
+                string percentile = self && totalPlayers > 0
+                    ? (OverrankText.IsSimplifiedChinese ? " 前" : " Top ")
+                        + Mathf.Clamp(Mathf.CeilToInt(entry.rank * 100f / totalPlayers), 1, 100)
+                        + "%"
+                    : string.Empty;
                 GUI.Label(
-                    new Rect(area.x, area.y + index * 22f, area.width, 21f),
-                    "#" + entry.rank + "  " + Truncate(entry.player_name, 10) + "    " + value);
+                    new Rect(0f, index * rowHeight, content.width, rowHeight - 1f),
+                    "#" + entry.rank + " " + Truncate(entry.player_name, 8) + " " + value + percentile);
                 GUI.color = previous;
             }
+            GUI.EndScrollView();
         }
 
         private void DrawLevels(Rect panel)
@@ -636,6 +660,8 @@ namespace Overrank
             _requestRunning = true;
             _requestError = null;
             _responseSummary = null;
+            _topScroll = Vector2.zero;
+            _nearbyScroll = Vector2.zero;
             _client.RequestLeaderboard(
                 _selectedLevelKey,
                 _players,

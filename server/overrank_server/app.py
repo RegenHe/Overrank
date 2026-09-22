@@ -66,8 +66,8 @@ def leaderboard(
     players: int = Query(ge=1, le=4),
     metric: Metric = Query(default="score"),
     player_id: str = Query(default="", max_length=128),
-    limit: int = Query(default=10, ge=1, le=50),
-    around: int = Query(default=3, ge=0, le=10),
+    limit: int = Query(default=100, ge=1, le=100),
+    around: int = Query(default=100, ge=1, le=100),
 ) -> dict:
     order = board_order(metric)
     common = f"""
@@ -97,8 +97,13 @@ def leaderboard(
                 (level_key, players, metric, player_id),
             ).fetchone()
             if self_row is not None:
-                first = max(1, int(self_row["rank_position"]) - around)
-                last = int(self_row["rank_position"]) + around
+                total_players = int(total_row["total"])
+                window_size = min(around, total_players)
+                first = max(1, int(self_row["rank_position"]) - window_size // 2)
+                last = first + window_size - 1
+                if last > total_players:
+                    last = total_players
+                    first = max(1, last - window_size + 1)
                 nearby_rows = connection.execute(
                     common + " SELECT * FROM ranked WHERE rank_position BETWEEN ? AND ? ORDER BY rank_position",
                     (level_key, players, metric, first, last),

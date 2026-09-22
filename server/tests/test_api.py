@@ -127,6 +127,37 @@ class OverrankApiTests(unittest.TestCase):
         self.assertEqual(leaderboard(second, 2, "score", "player-four-0004", 10, 3)["entries"][0]["score"], 900)
         self.assertGreaterEqual(len(played_levels("player-four-0004", 100)["levels"]), 2)
 
+    def test_large_board_returns_one_hundred_top_and_nearby_entries(self):
+        board = "official-eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee"
+        for index in range(1, 201):
+            submit(
+                self.payload(
+                    f"10000000-0000-0000-0000-{index:012x}",
+                    f"large-player-{index:04d}",
+                    board,
+                    10000 - index,
+                    index,
+                    f"Player {index:03d}",
+                )
+            )
+
+        response = leaderboard(
+            board,
+            players=2,
+            metric="score",
+            player_id="large-player-0100",
+            limit=100,
+            around=100,
+        )
+        self.assertEqual(response["total_players"], 200)
+        self.assertEqual(response["self_rank"], 100)
+        self.assertEqual(len(response["entries"]), 100)
+        self.assertEqual(response["entries"][0]["rank"], 1)
+        self.assertEqual(response["entries"][-1]["rank"], 100)
+        self.assertEqual(len(response["nearby"]), 100)
+        self.assertEqual(response["nearby"][0]["rank"], 50)
+        self.assertEqual(response["nearby"][-1]["rank"], 149)
+
 
 if __name__ == "__main__":
     unittest.main()
