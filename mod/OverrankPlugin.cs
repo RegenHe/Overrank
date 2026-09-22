@@ -31,6 +31,7 @@ namespace Overrank
 
         private Texture2D _iconBackground;
         private Texture2D _icon;
+        private Texture2D _panelBackground;
         private bool _showPanel;
         private bool _showLevels;
         private bool _requestRunning;
@@ -117,6 +118,10 @@ namespace Overrank
             if (_icon != null)
             {
                 Destroy(_icon);
+            }
+            if (_panelBackground != null)
+            {
+                Destroy(_panelBackground);
             }
         }
 
@@ -273,6 +278,18 @@ namespace Overrank
         {
             int previousDepth = GUI.depth;
             Color previousColor = GUI.color;
+            GUISkin skin = GUI.skin;
+            int previousLabelFontSize = skin == null ? 0 : skin.label.fontSize;
+            int previousButtonFontSize = skin == null ? 0 : skin.button.fontSize;
+            int previousToggleFontSize = skin == null ? 0 : skin.toggle.fontSize;
+            int previousBoxFontSize = skin == null ? 0 : skin.box.fontSize;
+            if (skin != null)
+            {
+                skin.label.fontSize = Mathf.Max(previousLabelFontSize, 14);
+                skin.button.fontSize = Mathf.Max(previousButtonFontSize, 14);
+                skin.toggle.fontSize = Mathf.Max(previousToggleFontSize, 14);
+                skin.box.fontSize = Mathf.Max(previousBoxFontSize, 14);
+            }
             GUI.depth = -900;
             GUI.color = Color.white;
 
@@ -289,16 +306,7 @@ namespace Overrank
                 _showPanel = !_showPanel;
                 if (_showPanel)
                 {
-                    TrySelectCurrentLevel();
-                    if (string.IsNullOrEmpty(_selectedLevelKey))
-                    {
-                        _showLevels = true;
-                        RefreshLevels();
-                    }
-                    else
-                    {
-                        RefreshBoard();
-                    }
+                    OpenLeaderboard();
                 }
                 current.Use();
             }
@@ -309,6 +317,27 @@ namespace Overrank
             }
             GUI.color = previousColor;
             GUI.depth = previousDepth;
+            if (skin != null)
+            {
+                skin.label.fontSize = previousLabelFontSize;
+                skin.button.fontSize = previousButtonFontSize;
+                skin.toggle.fontSize = previousToggleFontSize;
+                skin.box.fontSize = previousBoxFontSize;
+            }
+        }
+
+        private void OpenLeaderboard()
+        {
+            _showLevels = false;
+            TrySelectCurrentLevel();
+            if (string.IsNullOrEmpty(_selectedLevelKey))
+            {
+                RefreshLevels(true);
+            }
+            else
+            {
+                RefreshBoard();
+            }
         }
 
         private bool TrySelectCurrentLevel()
@@ -317,6 +346,15 @@ namespace Overrank
             {
                 GameSession session = GameUtils.GetGameSession();
                 if (session == null || session.LevelSettings == null)
+                {
+                    return false;
+                }
+
+                SceneDirectoryData.PerPlayerCountDirectoryEntry variant = session.LevelSettings.SceneDirectoryVarientEntry;
+                string activeScene = UnityEngine.SceneManagement.SceneManager.GetActiveScene().name;
+                if (variant == null
+                    || string.IsNullOrEmpty(variant.SceneName)
+                    || !string.Equals(activeScene, variant.SceneName, StringComparison.OrdinalIgnoreCase))
                 {
                     return false;
                 }
@@ -345,6 +383,7 @@ namespace Overrank
             const float height = 452f;
             float left = Mathf.Max(8f, Screen.width - width - 12f);
             Rect panel = new Rect(left, 52f, width, height);
+            GUI.DrawTexture(panel, _panelBackground, ScaleMode.StretchToFill, true);
             GUI.Box(panel, "Overrank");
 
             if (GUI.Button(new Rect(panel.x + panel.width - 34f, panel.y + 5f, 24f, 22f), "X"))
@@ -354,8 +393,7 @@ namespace Overrank
             }
             if (GUI.Button(new Rect(panel.x + 14f, panel.y + 32f, 112f, 26f), "Leaderboard"))
             {
-                _showLevels = false;
-                RefreshBoard();
+                OpenLeaderboard();
             }
             if (GUI.Button(new Rect(panel.x + 132f, panel.y + 32f, 112f, 26f), "Played levels"))
             {
@@ -584,6 +622,11 @@ namespace Overrank
 
         private void RefreshLevels()
         {
+            RefreshLevels(false);
+        }
+
+        private void RefreshLevels(bool selectLatestForLeaderboard)
+        {
             if (_requestRunning || _client == null)
             {
                 return;
@@ -603,6 +646,19 @@ namespace Overrank
                         int count = response.levels == null ? 0 : response.levels.Length;
                         _responseSummary = "Loaded " + count + " played level(s)";
                         _log.LogInfo("Played-level list loaded: count=" + count + ".");
+                        if (selectLatestForLeaderboard && count > 0)
+                        {
+                            PlayedLevel latest = response.levels[0];
+                            string label = string.IsNullOrEmpty(latest.level_label)
+                                ? latest.level_name
+                                : latest.level_label;
+                            _selectedLevelKey = latest.level_key;
+                            _selectedLevelName = LevelIdentity.ResolveDisplayName(latest.level_key, label);
+                            _lastLevelKey.Value = _selectedLevelKey;
+                            _lastLevelName.Value = _selectedLevelName;
+                            _showLevels = false;
+                            RefreshBoard();
+                        }
                     }
                 });
         }
@@ -613,6 +669,11 @@ namespace Overrank
             _iconBackground.hideFlags = HideFlags.HideAndDontSave;
             _iconBackground.SetPixel(0, 0, new Color(0.06f, 0.045f, 0.09f, 0.88f));
             _iconBackground.Apply(false, true);
+
+            _panelBackground = new Texture2D(1, 1, TextureFormat.ARGB32, false);
+            _panelBackground.hideFlags = HideFlags.HideAndDontSave;
+            _panelBackground.SetPixel(0, 0, new Color(0.025f, 0.02f, 0.045f, 0.62f));
+            _panelBackground.Apply(false, true);
 
             const int size = 22;
             _icon = new Texture2D(size, size, TextureFormat.ARGB32, false);
