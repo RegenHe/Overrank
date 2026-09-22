@@ -64,6 +64,8 @@ namespace Overrank
         public string metric;
         public int total_players;
         public int self_rank;
+        public bool nearby_overwashed_used;
+        public LeaderboardEntry[] self_entries = new LeaderboardEntry[0];
         public LeaderboardEntry[] entries = new LeaderboardEntry[0];
         public LeaderboardEntry[] nearby = new LeaderboardEntry[0];
     }

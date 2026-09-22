@@ -20,7 +20,7 @@ async def lifespan(_: FastAPI):
     yield
 
 
-app = FastAPI(title="Overrank", version="0.2.1", lifespan=lifespan)
+app = FastAPI(title="Overrank", version="0.2.2", lifespan=lifespan)
 
 
 def board_order(metric: Metric) -> str:
@@ -70,8 +70,10 @@ def leaderboard(
     player_id: str = Query(default="", max_length=128),
     limit: int = Query(default=100, ge=1, le=100),
     around: int = Query(default=100, ge=1, le=100),
+    around_overwashed: bool | None = Query(default=None),
 ) -> dict:
     order = board_order(metric)
+    requested_overwashed = around_overwashed if isinstance(around_overwashed, bool) else None
     common = f"""
         WITH ranked AS (
             SELECT *, ROW_NUMBER() OVER (ORDER BY {order}) AS rank_position
@@ -91,13 +93,26 @@ def leaderboard(
             """,
             (level_key, players, metric),
         ).fetchone()
+        self_rows = []
         self_row = None
         nearby_rows = []
         if player_id:
-            self_row = connection.execute(
-                common + " SELECT * FROM ranked WHERE player_id = ? ORDER BY rank_position LIMIT 1",
+            self_rows = connection.execute(
+                common + " SELECT * FROM ranked WHERE player_id = ? ORDER BY rank_position",
                 (level_key, players, metric, player_id),
-            ).fetchone()
+            ).fetchall()
+            if self_rows:
+                if requested_overwashed is None:
+                    self_row = self_rows[0]
+                else:
+                    self_row = next(
+                        (
+                            row
+                            for row in self_rows
+                            if bool(row["overwashed_used"]) == requested_overwashed
+                        ),
+                        self_rows[0],
+                    )
             if self_row is not None:
                 total_players = int(total_row["total"])
                 window_size = min(around, total_players)
@@ -128,6 +143,8 @@ def leaderboard(
         "metric": metric,
         "total_players": int(total_row["total"]),
         "self_rank": 0 if self_row is None else int(self_row["rank_position"]),
+        "nearby_overwashed_used": False if self_row is None else bool(self_row["overwashed_used"]),
+        "self_entries": [entry(row) for row in self_rows],
         "entries": [entry(row) for row in board_rows],
         "nearby": [entry(row) for row in nearby_rows],
     }
