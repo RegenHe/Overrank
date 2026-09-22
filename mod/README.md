@@ -3,7 +3,6 @@
 BepInEx 5 client for the Overrank community leaderboard.
 
 - Automatically records cooperative level results.
-- Records normal Campaign mode only; Practice and Survival results are ignored.
 - Displays Simplified Chinese UI when the game language is Simplified Chinese; all other languages use English.
 - Uploads score, successful dishes, player count, level identity and player identity.
 - Keeps failed uploads in `BepInEx/config/Overrank.pending.json` and retries later.
