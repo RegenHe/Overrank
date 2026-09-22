@@ -15,7 +15,7 @@ namespace Overrank
     {
         private readonly MonoBehaviour _host;
         private readonly ManualLogSource _log;
-        private readonly ConfigEntry<string> _serverUrl;
+        private readonly string _serverUrl;
         private readonly ConfigEntry<string> _apiKey;
         private readonly ConfigEntry<int> _timeoutSeconds;
         private readonly string _pendingPath;
@@ -30,7 +30,7 @@ namespace Overrank
         internal LeaderboardClient(
             MonoBehaviour host,
             ManualLogSource log,
-            ConfigEntry<string> serverUrl,
+            string serverUrl,
             ConfigEntry<string> apiKey,
             ConfigEntry<int> timeoutSeconds)
         {
@@ -83,7 +83,7 @@ namespace Overrank
 
         private string BaseUrl
         {
-            get { return (_serverUrl.Value ?? string.Empty).Trim().TrimEnd('/'); }
+            get { return (_serverUrl ?? string.Empty).Trim().TrimEnd('/'); }
         }
 
         private IEnumerator ProcessQueue()

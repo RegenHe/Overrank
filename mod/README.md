@@ -8,4 +8,4 @@ BepInEx 5 client for the Overrank community leaderboard.
 - Opens the leaderboard from the ranking icon near the top-right corner.
 - Supports official levels and OC2DIYLevel package UIDs; unknown custom loaders use a stable scene/config fingerprint.
 
-Configure the server in `BepInEx/config/local.overcooked2.overrank.cfg` after the first launch.
+The server endpoint is embedded in the DLL by `build.ps1` from the project-root `.env`; it is not exposed as a BepInEx configuration entry.

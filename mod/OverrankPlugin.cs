@@ -21,7 +21,7 @@ namespace Overrank
         private ManualLogSource _log;
         private Harmony _harmony;
         private LeaderboardClient _client;
-        private ConfigEntry<string> _serverUrl;
+        private string _serverUrl;
         private ConfigEntry<string> _apiKey;
         private ConfigEntry<int> _timeoutSeconds;
         private ConfigEntry<string> _installId;
@@ -52,13 +52,8 @@ namespace Overrank
         private void Awake()
         {
             _log = Logger;
-            _serverUrl = Config.Bind("Server", "Url", BuildConfig.DefaultServerUrl, "Overrank server base URL.");
+            _serverUrl = BuildConfig.DefaultServerUrl;
             _apiKey = Config.Bind("Server", "ApiKey", BuildConfig.DefaultApiKey, "Optional server API key.");
-            if (string.Equals(_serverUrl.Value, "http://127.0.0.1:8765", StringComparison.Ordinal)
-                && !string.Equals(BuildConfig.DefaultServerUrl, _serverUrl.Value, StringComparison.Ordinal))
-            {
-                _serverUrl.Value = BuildConfig.DefaultServerUrl;
-            }
             _timeoutSeconds = Config.Bind(
                 "Server",
                 "TimeoutSeconds",
@@ -91,7 +86,7 @@ namespace Overrank
             ScoreCapturePatch.LevelFinished = OnLevelFinished;
             _harmony = new Harmony(PluginGuid);
             _harmony.PatchAll(typeof(ScoreCapturePatch).Assembly);
-            _log.LogInfo("Overrank " + PluginVersion + " loaded.");
+            _log.LogInfo("Overrank " + PluginVersion + " loaded. Server endpoint is embedded in the DLL.");
         }
 
         private void Update()
