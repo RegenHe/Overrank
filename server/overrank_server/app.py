@@ -4,7 +4,7 @@ from contextlib import asynccontextmanager
 
 from fastapi import Depends, FastAPI, Header, HTTPException, Query
 
-from .database import connect, initialise
+from .database import connect, initialise, save_submission
 from .schemas import Metric, Submission
 
 
@@ -20,13 +20,13 @@ async def lifespan(_: FastAPI):
     yield
 
 
-app = FastAPI(title="Overrank", version="0.1.0", lifespan=lifespan)
+app = FastAPI(title="Overrank", version="0.2.0", lifespan=lifespan)
 
 
 def board_order(metric: Metric) -> str:
     if metric == "dishes":
-        return "dishes DESC, score DESC, completed_at ASC, id ASC"
-    return "score DESC, dishes DESC, completed_at ASC, id ASC"
+        return "dishes DESC, score DESC, completed_at ASC, submission_id ASC"
+    return "score DESC, dishes DESC, completed_at ASC, submission_id ASC"
 
 
 def entry(row) -> dict:
@@ -48,35 +48,16 @@ def health() -> dict:
 @app.post("/api/v1/submissions", dependencies=[Depends(require_api_key)])
 def submit(payload: Submission) -> dict:
     level_key = payload.level_uid
-    values = (
-        payload.submission_id,
-        payload.player_id,
-        payload.player_name,
-        payload.dlc_id,
-        payload.level_id,
-        level_key,
-        payload.level_name,
-        payload.level_label,
-        payload.player_count,
-        payload.score,
-        payload.dishes,
-        payload.stars,
-        payload.mod_version,
-        payload.completed_at,
-    )
+    record = payload.model_dump()
+    record["level_key"] = level_key
     with connect() as connection:
-        cursor = connection.execute(
-            """
-            INSERT OR IGNORE INTO attempts (
-                submission_id, player_id, player_name, dlc_id, level_id, level_key,
-                level_name, level_label, player_count, score, dishes, stars,
-                mod_version, completed_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-            """,
-            values,
-        )
-        accepted = cursor.rowcount == 1
-    return {"accepted": accepted, "duplicate": not accepted, "level_key": level_key}
+        connection.execute("BEGIN IMMEDIATE")
+        updated = save_submission(connection, record)
+    return {
+        "accepted": True,
+        "level_key": level_key,
+        "personal_best_updated": updated,
+    }
 
 
 @app.get("/api/v1/leaderboards/{level_key}", dependencies=[Depends(require_api_key)])
@@ -90,46 +71,42 @@ def leaderboard(
 ) -> dict:
     order = board_order(metric)
     common = f"""
-        WITH selected AS (
-            SELECT *, ROW_NUMBER() OVER (
-                PARTITION BY player_id ORDER BY {order}
-            ) AS player_choice
-            FROM attempts
-            WHERE level_key = ? AND player_count = ?
-        ), best AS (
-            SELECT * FROM selected WHERE player_choice = 1
-        ), ranked AS (
+        WITH ranked AS (
             SELECT *, ROW_NUMBER() OVER (ORDER BY {order}) AS rank_position
-            FROM best
+            FROM personal_bests
+            WHERE level_key = ? AND player_count = ? AND metric = ?
         )
     """
     with connect() as connection:
         board_rows = connection.execute(
             common + " SELECT * FROM ranked ORDER BY rank_position LIMIT ?",
-            (level_key, players, limit),
+            (level_key, players, metric, limit),
         ).fetchall()
         total_row = connection.execute(
-            "SELECT COUNT(DISTINCT player_id) AS total FROM attempts WHERE level_key = ? AND player_count = ?",
-            (level_key, players),
+            """
+            SELECT COUNT(*) AS total FROM personal_bests
+            WHERE level_key = ? AND player_count = ? AND metric = ?
+            """,
+            (level_key, players, metric),
         ).fetchone()
         self_row = None
         nearby_rows = []
         if player_id:
             self_row = connection.execute(
                 common + " SELECT * FROM ranked WHERE player_id = ?",
-                (level_key, players, player_id),
+                (level_key, players, metric, player_id),
             ).fetchone()
             if self_row is not None:
                 first = max(1, int(self_row["rank_position"]) - around)
                 last = int(self_row["rank_position"]) + around
                 nearby_rows = connection.execute(
                     common + " SELECT * FROM ranked WHERE rank_position BETWEEN ? AND ? ORDER BY rank_position",
-                    (level_key, players, first, last),
+                    (level_key, players, metric, first, last),
                 ).fetchall()
         level_row = connection.execute(
             """
             SELECT dlc_id, level_id, level_name, level_label
-            FROM attempts WHERE level_key = ? ORDER BY id DESC LIMIT 1
+            FROM player_levels WHERE level_key = ? ORDER BY last_played DESC LIMIT 1
             """,
             (level_key,),
         ).fetchone()
@@ -155,21 +132,29 @@ def played_levels(player_id: str, limit: int = Query(default=100, ge=1, le=500))
         rows = connection.execute(
             """
             SELECT
-                level_key,
-                MAX(level_name) AS level_name,
-                MAX(level_label) AS level_label,
-                MAX(dlc_id) AS dlc_id,
-                MAX(level_id) AS level_id,
-                MAX(score) AS best_score,
-                MAX(dishes) AS best_dishes,
-                MAX(completed_at) AS last_played
-            FROM attempts
-            WHERE player_id = ?
-            GROUP BY level_key
-            ORDER BY last_played DESC
+                activity.level_key,
+                activity.level_name,
+                activity.level_label,
+                activity.dlc_id,
+                activity.level_id,
+                COALESCE(best.best_score, 0) AS best_score,
+                COALESCE(best.best_dishes, 0) AS best_dishes,
+                activity.last_played
+            FROM player_levels AS activity
+            LEFT JOIN (
+                SELECT
+                    level_key,
+                    MAX(CASE WHEN metric = 'score' THEN score END) AS best_score,
+                    MAX(CASE WHEN metric = 'dishes' THEN dishes END) AS best_dishes
+                FROM personal_bests
+                WHERE player_id = ?
+                GROUP BY level_key
+            ) AS best ON best.level_key = activity.level_key
+            WHERE activity.player_id = ?
+            ORDER BY activity.last_played DESC
             LIMIT ?
             """,
-            (player_id, limit),
+            (player_id, player_id, limit),
         ).fetchall()
     return {
         "levels": [

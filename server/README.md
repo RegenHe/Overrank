@@ -2,6 +2,10 @@
 
 Small FastAPI/SQLite leaderboard service for the Overrank BepInEx mod.
 
+The database keeps at most two personal-best rows for each player, level and
+player-count combination: the best score attempt and the best dishes attempt.
+Inferior attempts update the last-played timestamp but are not retained.
+
 ## Local setup
 
 ```powershell
