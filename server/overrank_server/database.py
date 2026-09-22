@@ -6,7 +6,7 @@ from pathlib import Path
 from typing import Any, Mapping
 
 
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 3
 METRICS = ("score", "dishes")
 
 
@@ -34,14 +34,17 @@ def connect():
         connection.close()
 
 
-def create_schema(connection: sqlite3.Connection) -> None:
-    connection.executescript(
-        """
-        CREATE TABLE IF NOT EXISTS personal_bests (
+def _create_personal_bests_table(connection: sqlite3.Connection, table_name: str) -> None:
+    if table_name not in ("personal_bests", "personal_bests_v3_building"):
+        raise ValueError("Unexpected personal-best table name")
+    connection.execute(
+        f"""
+        CREATE TABLE {table_name} (
             player_id TEXT NOT NULL,
             level_key TEXT NOT NULL,
             player_count INTEGER NOT NULL,
             metric TEXT NOT NULL CHECK (metric IN ('score', 'dishes')),
+            overwashed_used INTEGER NOT NULL DEFAULT 0,
             submission_id TEXT NOT NULL,
             player_name TEXT NOT NULL,
             dlc_id INTEGER NOT NULL,
@@ -52,11 +55,54 @@ def create_schema(connection: sqlite3.Connection) -> None:
             dishes INTEGER NOT NULL,
             stars INTEGER NOT NULL,
             mod_version TEXT NOT NULL,
+            overwashed_version TEXT NOT NULL DEFAULT '',
             completed_at TEXT NOT NULL,
             received_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
-            PRIMARY KEY (player_id, level_key, player_count, metric)
-        );
+            PRIMARY KEY (player_id, level_key, player_count, metric, overwashed_used)
+        )
+        """
+    )
 
+
+def _ensure_personal_bests_schema(connection: sqlite3.Connection) -> None:
+    columns = connection.execute("PRAGMA table_info(personal_bests)").fetchall()
+    if not columns:
+        _create_personal_bests_table(connection, "personal_bests")
+        return
+
+    column_names = {row[1] for row in columns}
+    primary_key = [row[1] for row in sorted(columns, key=lambda row: row[5]) if row[5] > 0]
+    expected_primary_key = ["player_id", "level_key", "player_count", "metric", "overwashed_used"]
+    if "overwashed_version" in column_names and primary_key == expected_primary_key:
+        return
+
+    connection.execute("DROP TABLE IF EXISTS personal_bests_v3_building")
+    _create_personal_bests_table(connection, "personal_bests_v3_building")
+    used_expression = "overwashed_used" if "overwashed_used" in column_names else "0"
+    version_expression = "overwashed_version" if "overwashed_version" in column_names else "''"
+    connection.execute(
+        f"""
+        INSERT INTO personal_bests_v3_building (
+            player_id, level_key, player_count, metric, overwashed_used,
+            submission_id, player_name, dlc_id, level_id, level_name,
+            level_label, score, dishes, stars, mod_version,
+            overwashed_version, completed_at, received_at
+        )
+        SELECT
+            player_id, level_key, player_count, metric, {used_expression},
+            submission_id, player_name, dlc_id, level_id, level_name,
+            level_label, score, dishes, stars, mod_version,
+            {version_expression}, completed_at, received_at
+        FROM personal_bests
+        """
+    )
+    connection.execute("DROP TABLE personal_bests")
+    connection.execute("ALTER TABLE personal_bests_v3_building RENAME TO personal_bests")
+
+
+def create_schema(connection: sqlite3.Connection) -> None:
+    connection.executescript(
+        """
         CREATE TABLE IF NOT EXISTS player_levels (
             player_id TEXT NOT NULL,
             level_key TEXT NOT NULL,
@@ -70,7 +116,11 @@ def create_schema(connection: sqlite3.Connection) -> None:
             updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
             PRIMARY KEY (player_id, level_key)
         );
-
+        """
+    )
+    _ensure_personal_bests_schema(connection)
+    connection.executescript(
+        """
         CREATE INDEX IF NOT EXISTS idx_personal_bests_board_score
             ON personal_bests(level_key, player_count, metric, score DESC, dishes DESC, completed_at ASC);
         CREATE INDEX IF NOT EXISTS idx_personal_bests_board_dishes
@@ -108,6 +158,8 @@ def _is_better(record: Mapping[str, Any], current: sqlite3.Row, metric: str) -> 
 
 def save_submission(connection: sqlite3.Connection, record: Mapping[str, Any]) -> dict[str, bool]:
     """Update the two metric-specific personal bests and the last-played record."""
+    overwashed_used = 1 if record.get("overwashed_used", False) else 0
+    overwashed_version = str(record.get("overwashed_version") or "")
     connection.execute(
         """
         INSERT INTO player_levels (
@@ -151,9 +203,16 @@ def save_submission(connection: sqlite3.Connection, record: Mapping[str, Any]) -
             """
             SELECT score, dishes, completed_at
             FROM personal_bests
-            WHERE player_id = ? AND level_key = ? AND player_count = ? AND metric = ?
+            WHERE player_id = ? AND level_key = ? AND player_count = ?
+                AND metric = ? AND overwashed_used = ?
             """,
-            (record["player_id"], record["level_key"], record["player_count"], metric),
+            (
+                record["player_id"],
+                record["level_key"],
+                record["player_count"],
+                metric,
+                overwashed_used,
+            ),
         ).fetchone()
         improved = current is None or _is_better(record, current, metric)
         updated[metric] = improved
@@ -162,11 +221,12 @@ def save_submission(connection: sqlite3.Connection, record: Mapping[str, Any]) -
             connection.execute(
                 """
                 INSERT INTO personal_bests (
-                    player_id, level_key, player_count, metric, submission_id,
+                    player_id, level_key, player_count, metric, overwashed_used, submission_id,
                     player_name, dlc_id, level_id, level_name, level_label,
-                    score, dishes, stars, mod_version, completed_at, received_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                ON CONFLICT(player_id, level_key, player_count, metric) DO UPDATE SET
+                    score, dishes, stars, mod_version, overwashed_version,
+                    completed_at, received_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(player_id, level_key, player_count, metric, overwashed_used) DO UPDATE SET
                     submission_id = excluded.submission_id,
                     player_name = excluded.player_name,
                     dlc_id = excluded.dlc_id,
@@ -177,6 +237,7 @@ def save_submission(connection: sqlite3.Connection, record: Mapping[str, Any]) -
                     dishes = excluded.dishes,
                     stars = excluded.stars,
                     mod_version = excluded.mod_version,
+                    overwashed_version = excluded.overwashed_version,
                     completed_at = excluded.completed_at,
                     received_at = excluded.received_at
                 """,
@@ -185,6 +246,7 @@ def save_submission(connection: sqlite3.Connection, record: Mapping[str, Any]) -
                     record["level_key"],
                     record["player_count"],
                     metric,
+                    overwashed_used,
                     record["submission_id"],
                     record["player_name"],
                     record["dlc_id"],
@@ -195,6 +257,7 @@ def save_submission(connection: sqlite3.Connection, record: Mapping[str, Any]) -
                     record["dishes"],
                     record["stars"],
                     record["mod_version"],
+                    overwashed_version,
                     record["completed_at"],
                     _received_at(record),
                 ),
@@ -205,7 +268,8 @@ def save_submission(connection: sqlite3.Connection, record: Mapping[str, Any]) -
                 UPDATE personal_bests
                 SET player_name = ?, dlc_id = ?, level_id = ?,
                     level_name = ?, level_label = ?
-                WHERE player_id = ? AND level_key = ? AND player_count = ? AND metric = ?
+                WHERE player_id = ? AND level_key = ? AND player_count = ?
+                    AND metric = ? AND overwashed_used = ?
                 """,
                 (
                     record["player_name"],
@@ -217,6 +281,7 @@ def save_submission(connection: sqlite3.Connection, record: Mapping[str, Any]) -
                     record["level_key"],
                     record["player_count"],
                     metric,
+                    overwashed_used,
                 ),
             )
     return updated

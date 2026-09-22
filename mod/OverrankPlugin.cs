@@ -31,6 +31,7 @@ namespace Overrank
 
         private Texture2D _iconBackground;
         private Texture2D _icon;
+        private Texture2D _overwashedIcon;
         private Texture2D _panelBackground;
         private bool _showPanel;
         private bool _showLevels;
@@ -121,6 +122,10 @@ namespace Overrank
             {
                 Destroy(_icon);
             }
+            if (_overwashedIcon != null)
+            {
+                Destroy(_overwashedIcon);
+            }
             if (_panelBackground != null)
             {
                 Destroy(_panelBackground);
@@ -176,6 +181,9 @@ namespace Overrank
                 {
                     stars = Mathf.Clamp(variant.GetStarForPoints(score.GetTotalScore(), false), 0, 4);
                 }
+                bool overwashedUsed;
+                string overwashedVersion;
+                OverwashedIntegration.ReadRoundUsage(out overwashedUsed, out overwashedVersion);
                 ScoreSubmission submission = new ScoreSubmission
                 {
                     submission_id = Guid.NewGuid().ToString(),
@@ -191,6 +199,8 @@ namespace Overrank
                     dishes = score.TotalSuccessfulDeliveries,
                     stars = stars,
                     mod_version = PluginVersion,
+                    overwashed_used = overwashedUsed,
+                    overwashed_version = overwashedVersion,
                     completed_at = DateTime.UtcNow.ToString("o")
                 };
 
@@ -542,9 +552,26 @@ namespace Overrank
                         + Mathf.Clamp(Mathf.CeilToInt(entry.rank * 100f / totalPlayers), 1, 100)
                         + "%"
                     : string.Empty;
+                float rowY = index * rowHeight;
                 GUI.Label(
-                    new Rect(0f, index * rowHeight, content.width, rowHeight - 1f),
-                    "#" + entry.rank + " " + Truncate(entry.player_name, 8) + " " + value + percentile);
+                    new Rect(0f, rowY, 38f, rowHeight - 1f),
+                    "#" + entry.rank);
+                GUI.Label(
+                    new Rect(38f, rowY, 58f, rowHeight - 1f),
+                    Truncate(entry.player_name, 7));
+                float valueX = 98f;
+                if (entry.overwashed_used && _overwashedIcon != null)
+                {
+                    GUI.DrawTexture(
+                        new Rect(valueX, rowY + 4f, 12f, 12f),
+                        _overwashedIcon,
+                        ScaleMode.ScaleToFit,
+                        true);
+                    valueX += 15f;
+                }
+                GUI.Label(
+                    new Rect(valueX, rowY, content.width - valueX, rowHeight - 1f),
+                    value + percentile);
                 GUI.color = previous;
             }
             GUI.EndScrollView();
@@ -770,6 +797,24 @@ namespace Overrank
             for (int x = 2; x <= 20; x++) pixels[2 * size + x] = pale;
             _icon.SetPixels32(pixels);
             _icon.Apply(false, true);
+
+            const int assistantSize = 12;
+            _overwashedIcon = new Texture2D(assistantSize, assistantSize, TextureFormat.ARGB32, false);
+            _overwashedIcon.hideFlags = HideFlags.HideAndDontSave;
+            Color32[] assistantPixels = new Color32[assistantSize * assistantSize];
+            Color32 cyan = new Color32(91, 224, 255, 255);
+            Color32 dark = new Color32(20, 48, 72, 255);
+            for (int x = 2; x <= 9; x++)
+            {
+                for (int y = 2; y <= 9; y++) assistantPixels[y * assistantSize + x] = cyan;
+            }
+            assistantPixels[10 * assistantSize + 5] = cyan;
+            assistantPixels[11 * assistantSize + 5] = cyan;
+            assistantPixels[6 * assistantSize + 4] = dark;
+            assistantPixels[6 * assistantSize + 7] = dark;
+            for (int x = 4; x <= 7; x++) assistantPixels[3 * assistantSize + x] = dark;
+            _overwashedIcon.SetPixels32(assistantPixels);
+            _overwashedIcon.Apply(false, true);
         }
 
         private static string Truncate(string value, int length)

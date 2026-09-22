@@ -20,6 +20,8 @@ namespace Overrank
         public int dishes;
         public int stars;
         public string mod_version;
+        public bool overwashed_used;
+        public string overwashed_version;
         public string completed_at;
     }
 
@@ -45,6 +47,8 @@ namespace Overrank
         public string player_name;
         public int score;
         public int dishes;
+        public bool overwashed_used;
+        public string overwashed_version;
         public string completed_at;
     }
 

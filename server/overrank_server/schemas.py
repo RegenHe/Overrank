@@ -19,6 +19,8 @@ class Submission(BaseModel):
     dishes: int = Field(ge=0, le=10000)
     stars: int = Field(ge=0, le=4)
     mod_version: str = Field(min_length=1, max_length=32)
+    overwashed_used: bool = False
+    overwashed_version: str = Field(default="", max_length=32)
     completed_at: str = Field(min_length=10, max_length=64)
 
     @field_validator("submission_id")
@@ -31,6 +33,11 @@ class Submission(BaseModel):
     def clean_text(cls, value: str) -> str:
         cleaned = "".join(character for character in value.strip() if character >= " " and character != "\x7f")
         return cleaned or "Unknown"
+
+    @field_validator("overwashed_version")
+    @classmethod
+    def clean_optional_text(cls, value: str) -> str:
+        return "".join(character for character in value.strip() if character >= " " and character != "\x7f")
 
     @field_validator("completed_at")
     @classmethod

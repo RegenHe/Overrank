@@ -20,7 +20,7 @@ async def lifespan(_: FastAPI):
     yield
 
 
-app = FastAPI(title="Overrank", version="0.2.0", lifespan=lifespan)
+app = FastAPI(title="Overrank", version="0.2.1", lifespan=lifespan)
 
 
 def board_order(metric: Metric) -> str:
@@ -36,6 +36,8 @@ def entry(row) -> dict:
         "player_name": row["player_name"],
         "score": int(row["score"]),
         "dishes": int(row["dishes"]),
+        "overwashed_used": bool(row["overwashed_used"]),
+        "overwashed_version": row["overwashed_version"],
         "completed_at": row["completed_at"],
     }
 
@@ -93,7 +95,7 @@ def leaderboard(
         nearby_rows = []
         if player_id:
             self_row = connection.execute(
-                common + " SELECT * FROM ranked WHERE player_id = ?",
+                common + " SELECT * FROM ranked WHERE player_id = ? ORDER BY rank_position LIMIT 1",
                 (level_key, players, metric, player_id),
             ).fetchone()
             if self_row is not None:
