@@ -138,6 +138,11 @@ namespace Overrank
                 {
                     return;
                 }
+                if (session.GameModeKind != GameModes.Kind.Campaign)
+                {
+                    _log.LogInfo("Ignoring completed level in " + session.GameModeKind + " mode; only Campaign scores are ranked.");
+                    return;
+                }
                 ClientTeamMonitor monitor = flow.GetMonitorForTeam(TeamID.One);
                 if (monitor == null || monitor.Score == null)
                 {
