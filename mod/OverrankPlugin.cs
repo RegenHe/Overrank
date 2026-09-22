@@ -396,11 +396,15 @@ namespace Overrank
                 _showPanel = false;
                 return;
             }
-            if (GUI.Button(new Rect(panel.x + 14f, panel.y + 32f, 112f, 26f), "Leaderboard"))
+            if (GUI.Button(
+                new Rect(panel.x + 14f, panel.y + 32f, 112f, 26f),
+                OverrankText.Get("Leaderboard", "排行榜")))
             {
                 OpenLeaderboard();
             }
-            if (GUI.Button(new Rect(panel.x + 132f, panel.y + 32f, 112f, 26f), "Played levels"))
+            if (GUI.Button(
+                new Rect(panel.x + 132f, panel.y + 32f, 112f, 26f),
+                OverrankText.Get("Played levels", "已玩关卡")))
             {
                 _showLevels = true;
                 RefreshLevels();
@@ -416,7 +420,7 @@ namespace Overrank
             }
 
             string networkStatus = _requestRunning
-                ? "Loading..."
+                ? OverrankText.Get("Loading...", "加载中……")
                 : (!string.IsNullOrEmpty(_requestError)
                     ? _requestError
                     : (!string.IsNullOrEmpty(_responseSummary)
@@ -427,26 +431,40 @@ namespace Overrank
 
         private void DrawLeaderboard(Rect panel)
         {
-            string title = string.IsNullOrEmpty(_selectedLevelName) ? "No uploaded level yet" : _selectedLevelName;
+            string title = string.IsNullOrEmpty(_selectedLevelName)
+                ? OverrankText.Get("No uploaded level yet", "尚无已上传关卡")
+                : _selectedLevelName;
             GUI.Label(new Rect(panel.x + 14f, panel.y + 68f, panel.width - 150f, 24f), title);
-            if (GUI.Button(new Rect(panel.x + panel.width - 94f, panel.y + 66f, 80f, 24f), "Refresh"))
+            if (GUI.Button(
+                new Rect(panel.x + panel.width - 94f, panel.y + 66f, 80f, 24f),
+                OverrankText.Get("Refresh", "刷新")))
             {
                 RefreshBoard();
             }
 
-            GUI.Label(new Rect(panel.x + 14f, panel.y + 98f, 52f, 22f), "Rank by");
-            if (GUI.Toggle(new Rect(panel.x + 70f, panel.y + 98f, 70f, 22f), _metric == "score", "Score") && _metric != "score")
+            GUI.Label(
+                new Rect(panel.x + 14f, panel.y + 98f, 52f, 22f),
+                OverrankText.Get("Rank by", "排序"));
+            if (GUI.Toggle(
+                new Rect(panel.x + 70f, panel.y + 98f, 70f, 22f),
+                _metric == "score",
+                OverrankText.Get("Score", "分数")) && _metric != "score")
             {
                 _metric = "score";
                 RefreshBoard();
             }
-            if (GUI.Toggle(new Rect(panel.x + 144f, panel.y + 98f, 78f, 22f), _metric == "dishes", "Dishes") && _metric != "dishes")
+            if (GUI.Toggle(
+                new Rect(panel.x + 144f, panel.y + 98f, 78f, 22f),
+                _metric == "dishes",
+                OverrankText.Get("Dishes", "菜数")) && _metric != "dishes")
             {
                 _metric = "dishes";
                 RefreshBoard();
             }
 
-            GUI.Label(new Rect(panel.x + 250f, panel.y + 98f, 58f, 22f), "Players");
+            GUI.Label(
+                new Rect(panel.x + 250f, panel.y + 98f, 58f, 22f),
+                OverrankText.Get("Players", "人数"));
             for (int count = 1; count <= 4; count++)
             {
                 if (GUI.Toggle(
@@ -463,8 +481,12 @@ namespace Overrank
 
             float bodyTop = panel.y + 130f;
             float columnWidth = (panel.width - 42f) * 0.5f;
-            GUI.Box(new Rect(panel.x + 14f, bodyTop, columnWidth, 278f), "Top players");
-            GUI.Box(new Rect(panel.x + 28f + columnWidth, bodyTop, columnWidth, 278f), "Around me");
+            GUI.Box(
+                new Rect(panel.x + 14f, bodyTop, columnWidth, 278f),
+                OverrankText.Get("Top players", "最高排名"));
+            GUI.Box(
+                new Rect(panel.x + 28f + columnWidth, bodyTop, columnWidth, 278f),
+                OverrankText.Get("Around me", "我的附近"));
             LeaderboardEntry[] top = _leaderboard == null || _leaderboard.entries == null
                 ? new LeaderboardEntry[0]
                 : _leaderboard.entries;
@@ -479,7 +501,9 @@ namespace Overrank
         {
             if (entries.Length == 0)
             {
-                GUI.Label(new Rect(area.x, area.y, area.width, 22f), "No scores for this selection");
+                GUI.Label(
+                    new Rect(area.x, area.y, area.width, 22f),
+                    OverrankText.Get("No scores for this selection", "当前条件下暂无成绩"));
                 return;
             }
             int count = Mathf.Min(entries.Length, 10);
@@ -492,7 +516,9 @@ namespace Overrank
                 {
                     GUI.color = new Color(0.55f, 1f, 0.75f, 1f);
                 }
-                string value = "Score:" + entry.score + "  Dishes:" + entry.dishes;
+                string value = OverrankText.IsSimplifiedChinese
+                    ? "分数:" + entry.score + "  菜数:" + entry.dishes
+                    : "Score:" + entry.score + "  Dishes:" + entry.dishes;
                 GUI.Label(
                     new Rect(area.x, area.y + index * 22f, area.width, 21f),
                     "#" + entry.rank + "  " + Truncate(entry.player_name, 10) + "    " + value);
@@ -502,7 +528,9 @@ namespace Overrank
 
         private void DrawLevels(Rect panel)
         {
-            if (GUI.Button(new Rect(panel.x + panel.width - 94f, panel.y + 66f, 80f, 24f), "Refresh"))
+            if (GUI.Button(
+                new Rect(panel.x + panel.width - 94f, panel.y + 66f, 80f, 24f),
+                OverrankText.Get("Refresh", "刷新")))
             {
                 RefreshLevels();
             }
@@ -514,7 +542,9 @@ namespace Overrank
             _levelsPage = Mathf.Clamp(_levelsPage, 0, maxPage);
             GUI.Label(
                 new Rect(panel.x + 14f, panel.y + 70f, panel.width - 120f, 22f),
-                "Levels uploaded by " + Truncate(_playerName, 28));
+                OverrankText.IsSimplifiedChinese
+                    ? Truncate(_playerName, 28) + " 上传过的关卡"
+                    : "Levels uploaded by " + Truncate(_playerName, 28));
 
             int first = _levelsPage * pageSize;
             int last = Mathf.Min(first + pageSize, levels.Length);
@@ -539,19 +569,27 @@ namespace Overrank
                 GUI.Label(new Rect(panel.x + 22f, y + 2f, panel.width - 230f, 20f), Truncate(displayLabel, 42));
                 GUI.Label(
                     new Rect(panel.x + panel.width - 205f, y + 2f, 185f, 20f),
-                    "Score: " + level.best_score + "  Dishes: " + level.best_dishes);
+                    OverrankText.IsSimplifiedChinese
+                        ? "分数: " + level.best_score + "  菜数: " + level.best_dishes
+                        : "Score: " + level.best_score + "  Dishes: " + level.best_dishes);
             }
             if (levels.Length == 0 && !_requestRunning)
             {
-                GUI.Label(new Rect(panel.x + 14f, panel.y + 105f, panel.width - 28f, 22f), "No uploaded levels yet");
+                GUI.Label(
+                    new Rect(panel.x + 14f, panel.y + 105f, panel.width - 28f, 22f),
+                    OverrankText.Get("No uploaded levels yet", "尚无已上传关卡"));
             }
             GUI.enabled = _levelsPage > 0;
-            if (GUI.Button(new Rect(panel.x + 14f, panel.y + 407f, 70f, 24f), "Previous"))
+            if (GUI.Button(
+                new Rect(panel.x + 14f, panel.y + 407f, 70f, 24f),
+                OverrankText.Get("Previous", "上一页")))
             {
                 _levelsPage--;
             }
             GUI.enabled = _levelsPage < maxPage;
-            if (GUI.Button(new Rect(panel.x + 90f, panel.y + 407f, 70f, 24f), "Next"))
+            if (GUI.Button(
+                new Rect(panel.x + 90f, panel.y + 407f, 70f, 24f),
+                OverrankText.Get("Next", "下一页")))
             {
                 _levelsPage++;
             }
@@ -582,7 +620,7 @@ namespace Overrank
         {
             if (string.IsNullOrEmpty(key))
             {
-                return "unknown";
+                return OverrankText.Get("unknown", "未知");
             }
             int dash = key.LastIndexOf('-');
             string suffix = dash >= 0 && dash + 1 < key.Length ? key.Substring(dash + 1) : key;
@@ -612,8 +650,11 @@ namespace Overrank
                         _leaderboard = response;
                         int topCount = response.entries == null ? 0 : response.entries.Length;
                         int nearbyCount = response.nearby == null ? 0 : response.nearby.Length;
-                        _responseSummary = "Loaded " + topCount + " score(s); your rank: "
-                            + (response.self_rank > 0 ? "#" + response.self_rank : "not ranked");
+                        _responseSummary = OverrankText.IsSimplifiedChinese
+                            ? "已加载 " + topCount + " 条成绩；你的排名："
+                                + (response.self_rank > 0 ? "#" + response.self_rank : "未上榜")
+                            : "Loaded " + topCount + " score(s); your rank: "
+                                + (response.self_rank > 0 ? "#" + response.self_rank : "not ranked");
                         _log.LogInfo(
                             "Leaderboard loaded: level=" + response.level_key
                             + ", players=" + response.players
@@ -649,7 +690,9 @@ namespace Overrank
                     {
                         _playedLevels = response;
                         int count = response.levels == null ? 0 : response.levels.Length;
-                        _responseSummary = "Loaded " + count + " played level(s)";
+                        _responseSummary = OverrankText.IsSimplifiedChinese
+                            ? "已加载 " + count + " 个已玩关卡"
+                            : "Loaded " + count + " played level(s)";
                         _log.LogInfo("Played-level list loaded: count=" + count + ".");
                         if (selectLatestForLeaderboard && count > 0)
                         {
@@ -707,7 +750,7 @@ namespace Overrank
         {
             if (string.IsNullOrEmpty(value))
             {
-                return "Unknown";
+                return OverrankText.Get("Unknown", "未知");
             }
             return value.Length <= length ? value : value.Substring(0, Math.Max(1, length - 1)) + "…";
         }

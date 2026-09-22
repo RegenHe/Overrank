@@ -55,7 +55,7 @@ namespace Overrank
         {
             _pending.Add(submission);
             SavePending();
-            Status = "Score queued for upload";
+            Status = OverrankText.Get("Score queued for upload", "成绩已加入上传队列");
             Start();
         }
 
@@ -93,7 +93,7 @@ namespace Overrank
             {
                 if (_pending.Count == 0)
                 {
-                    Status = "Connected";
+                    Status = OverrankText.Get("Connected", "已连接");
                     yield return new WaitForSecondsRealtime(10f);
                     continue;
                 }
@@ -116,7 +116,9 @@ namespace Overrank
                 {
                     _pending.RemoveAt(0);
                     SavePending();
-                    Status = _pending.Count == 0 ? "Score uploaded" : "Uploading queued scores";
+                    Status = _pending.Count == 0
+                        ? OverrankText.Get("Score uploaded", "成绩已上传")
+                        : OverrankText.Get("Uploading queued scores", "正在上传队列中的成绩");
                     _lastReportedError = null;
                     Action callback = SubmissionUploaded;
                     if (callback != null)
@@ -127,7 +129,7 @@ namespace Overrank
                 }
                 else
                 {
-                    Status = "Offline - score kept for retry";
+                    Status = OverrankText.Get("Offline - score kept for retry", "离线：成绩已保存，稍后重试");
                     ReportNetworkError(error);
                     yield return new WaitForSecondsRealtime(15f);
                 }
@@ -169,7 +171,7 @@ namespace Overrank
                     PopulateNestedArrays(parsed, request.downloadHandler.text);
                     if (parsed == null)
                     {
-                        callback(null, "Server returned an empty JSON object");
+                        callback(null, OverrankText.Get("Server returned an empty JSON object", "服务器返回了空的 JSON 对象"));
                     }
                     else
                     {
@@ -178,7 +180,9 @@ namespace Overrank
                 }
                 catch (Exception exception)
                 {
-                    callback(null, "Invalid server response: " + exception.Message);
+                    callback(
+                        null,
+                        OverrankText.Get("Invalid server response: ", "服务器响应无效：") + exception.Message);
                 }
             }
         }
