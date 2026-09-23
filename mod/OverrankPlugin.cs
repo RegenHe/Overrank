@@ -71,13 +71,13 @@ namespace Overrank
                 8,
                 new ConfigDescription("Network timeout in seconds.", new AcceptableValueRange<int>(2, 60)));
             _installId = Config.Bind("Identity", "InstallId", string.Empty, "Fallback anonymous installation identifier.");
-            _lastLevelKey = Config.Bind("State", "LastLevelKey", string.Empty, "Last uploaded level.");
-            _lastLevelName = Config.Bind("State", "LastLevelName", string.Empty, "Last uploaded level display name.");
+            _lastLevelKey = Config.Bind("State", "LastLevelKey", string.Empty, "Last played level shown in Overrank.");
+            _lastLevelName = Config.Bind("State", "LastLevelName", string.Empty, "Last played level display name.");
             _lastPlayerCount = Config.Bind(
                 "State",
                 "LastPlayerCount",
                 1,
-                new ConfigDescription("Last uploaded player count.", new AcceptableValueRange<int>(1, 4)));
+                new ConfigDescription("Last played player count.", new AcceptableValueRange<int>(1, 4)));
 
             if (string.IsNullOrEmpty(_installId.Value))
             {
@@ -415,7 +415,14 @@ namespace Overrank
             float left = Mathf.Max(8f, Screen.width - width - 12f);
             Rect panel = new Rect(left, 52f, width, height);
             GUI.DrawTexture(panel, _panelBackground, ScaleMode.StretchToFill, true);
-            GUI.Box(panel, "Overrank");
+            GUIStyle titleBoxStyle = new GUIStyle(GUI.skin.box);
+            titleBoxStyle.normal.textColor = new Color(1f, 0.82f, 0.28f, 1f);
+            GUI.Box(
+                panel,
+                OverrankText.Get(
+                    "Overrank - Rankings are just for fun",
+                    "Overrank - 排名仅供娱乐"),
+                titleBoxStyle);
 
             if (GUI.Button(new Rect(panel.x + panel.width - 34f, panel.y + 5f, 24f, 22f), "X"))
             {
@@ -458,7 +465,7 @@ namespace Overrank
         private void DrawLeaderboard(Rect panel)
         {
             string title = string.IsNullOrEmpty(_selectedLevelName)
-                ? OverrankText.Get("No uploaded level yet", "尚无已上传关卡")
+                ? OverrankText.Get("No played level yet", "尚无玩过的关卡")
                 : _selectedLevelName;
             GUI.Label(new Rect(panel.x + 14f, panel.y + 68f, panel.width - 150f, 24f), title);
             if (GUI.Button(
@@ -737,8 +744,8 @@ namespace Overrank
             GUI.Label(
                 new Rect(panel.x + 14f, panel.y + 70f, panel.width - 120f, 22f),
                 OverrankText.IsSimplifiedChinese
-                    ? Truncate(_playerName, 28) + " 上传过的关卡"
-                    : "Levels uploaded by " + Truncate(_playerName, 28));
+                    ? Truncate(_playerName, 28) + " 玩过的关卡"
+                    : "Levels played by " + Truncate(_playerName, 28));
 
             int first = _levelsPage * pageSize;
             int last = Mathf.Min(first + pageSize, levels.Length);
@@ -772,7 +779,7 @@ namespace Overrank
             {
                 GUI.Label(
                     new Rect(panel.x + 14f, panel.y + 105f, panel.width - 28f, 22f),
-                    OverrankText.Get("No uploaded levels yet", "尚无已上传关卡"));
+                OverrankText.Get("No played levels yet", "尚无玩过的关卡"));
             }
             GUI.enabled = _levelsPage > 0;
             if (GUI.Button(
