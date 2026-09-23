@@ -33,7 +33,7 @@ async def lifespan(_: FastAPI):
     yield
 
 
-app = FastAPI(title="Overrank", version="0.3.0", lifespan=lifespan)
+app = FastAPI(title="Overrank", version="1.0.0", lifespan=lifespan)
 
 
 def _active_presence(now: float | None = None) -> list[dict]:

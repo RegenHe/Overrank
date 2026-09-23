@@ -109,7 +109,7 @@ class OverrankApiTests(unittest.TestCase):
                 round_id=round_id,
                 local_players=1,
                 in_level=True,
-                mod_version="0.3.0",
+                mod_version="1.0.0",
             )
         )
 
