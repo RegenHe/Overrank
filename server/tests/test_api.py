@@ -137,6 +137,36 @@ class OverrankApiTests(unittest.TestCase):
         self.assertTrue(assisted_self["nearby_overwashed_used"])
         self.assertEqual([row["rank"] for row in assisted_self["nearby"]], [1])
 
+        unassisted_board = leaderboard(
+            board,
+            players=2,
+            metric="score",
+            player_id="player-one-00001",
+            limit=10,
+            around=10,
+            assistance="unassisted",
+        )
+        self.assertEqual(unassisted_board["assistance"], "unassisted")
+        self.assertEqual(unassisted_board["total_players"], 2)
+        self.assertEqual(unassisted_board["self_rank"], 1)
+        self.assertEqual([row["score"] for row in unassisted_board["entries"]], [1200, 1000])
+        self.assertTrue(all(not row["overwashed_used"] for row in unassisted_board["entries"]))
+
+        assisted_board = leaderboard(
+            board,
+            players=2,
+            metric="score",
+            player_id="player-one-00001",
+            limit=10,
+            around=10,
+            assistance="assisted",
+        )
+        self.assertEqual(assisted_board["assistance"], "assisted")
+        self.assertEqual(assisted_board["total_players"], 1)
+        self.assertEqual(assisted_board["self_rank"], 1)
+        self.assertEqual([row["score"] for row in assisted_board["entries"]], [1400])
+        self.assertTrue(all(row["overwashed_used"] for row in assisted_board["entries"]))
+
         dishes_board = leaderboard(board, players=2, metric="dishes", player_id="player-two-00002", limit=10, around=3)
         self.assertEqual(dishes_board["entries"][0]["player_name"], "One")
         self.assertEqual(dishes_board["entries"][0]["score"], 1400)

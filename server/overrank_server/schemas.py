@@ -49,3 +49,4 @@ class Submission(BaseModel):
 
 
 Metric = Literal["score", "dishes"]
+Assistance = Literal["all", "unassisted", "assisted"]

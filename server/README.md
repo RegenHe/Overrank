@@ -2,12 +2,7 @@
 
 Small FastAPI/SQLite leaderboard service for the Overrank BepInEx mod.
 
-The database keeps separate personal bests for unassisted and Overwashed-assisted
-runs. Each player, level, player-count and assistance combination retains the
-best score attempt and the best dishes attempt. Inferior attempts update the
-last-played timestamp but are not retained.
-Leaderboard responses expose both personal ranks and can center the nearby
-window on either the unassisted or assisted result.
+The database keeps separate personal bests for unassisted and Overwashed-assisted runs. Each player, level, player-count and assistance combination retains the best score attempt and the best dishes attempt. Inferior attempts update the last-played timestamp but are not retained. Leaderboard responses expose both personal ranks and can center the nearby window on either the unassisted or assisted result.
 
 ## Local setup
 

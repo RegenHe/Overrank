@@ -45,13 +45,19 @@ namespace Overrank
         private string _metric = "score";
         private int _players = 1;
         private int _levelsPage;
-        private int _nearbyAnchor = -1;
+        private int _nearbyMode;
+        private bool _nearbySelectedOverwashed;
+        private bool _centerNearbyOnSelf;
         private Vector2 _topScroll;
         private Vector2 _nearbyScroll;
         private float _nextIdentityRefresh;
         private float _lastCaptureTime = -100f;
         private string _lastCaptureFingerprint;
         private LeaderboardResponse _leaderboard;
+        private string _leaderboardCacheKey;
+        private LeaderboardResponse _overallLeaderboard;
+        private LeaderboardResponse _unassistedLeaderboard;
+        private LeaderboardResponse _assistedLeaderboard;
         private PlayedLevelsResponse _playedLevels;
 
         private void Awake()
@@ -208,7 +214,7 @@ namespace Overrank
                 _selectedLevelKey = level.Uid;
                 _selectedLevelName = level.DisplayName;
                 _players = playerCount;
-                _nearbyAnchor = -1;
+                _nearbyMode = 0;
                 _lastLevelKey.Value = _selectedLevelKey;
                 _lastLevelName.Value = _selectedLevelName;
                 _lastPlayerCount.Value = _players;
@@ -280,6 +286,7 @@ namespace Overrank
 
         private void OnSubmissionUploaded()
         {
+            ClearLeaderboardCache();
             if (_showPanel)
             {
                 if (_showLevels)
@@ -388,7 +395,7 @@ namespace Overrank
                 if (!string.Equals(_selectedLevelKey, level.Uid, StringComparison.Ordinal)
                     || _players != Mathf.Clamp(count, 1, 4))
                 {
-                    _nearbyAnchor = -1;
+                    _nearbyMode = 0;
                 }
                 _selectedLevelKey = level.Uid;
                 _selectedLevelName = level.DisplayName;
@@ -403,7 +410,7 @@ namespace Overrank
 
         private void DrawPanel()
         {
-            const float width = 600f;
+            float width = Mathf.Min(900f, Screen.width - 24f);
             const float height = 452f;
             float left = Mathf.Max(8f, Screen.width - width - 12f);
             Rect panel = new Rect(left, 52f, width, height);
@@ -458,6 +465,7 @@ namespace Overrank
                 new Rect(panel.x + panel.width - 94f, panel.y + 66f, 80f, 24f),
                 OverrankText.Get("Refresh", "刷新")))
             {
+                ClearLeaderboardCache();
                 RefreshBoard();
             }
 
@@ -470,7 +478,7 @@ namespace Overrank
                 OverrankText.Get("Score", "分数")) && _metric != "score")
             {
                 _metric = "score";
-                _nearbyAnchor = -1;
+                _nearbyMode = 0;
                 RefreshBoard();
             }
             if (GUI.Toggle(
@@ -479,7 +487,7 @@ namespace Overrank
                 OverrankText.Get("Dishes", "菜数")) && _metric != "dishes")
             {
                 _metric = "dishes";
-                _nearbyAnchor = -1;
+                _nearbyMode = 0;
                 RefreshBoard();
             }
 
@@ -496,49 +504,59 @@ namespace Overrank
                 {
                     _players = count;
                     _lastPlayerCount.Value = count;
-                    _nearbyAnchor = -1;
+                    _nearbyMode = 0;
                     RefreshBoard();
                 }
             }
+            DrawNearbyModeButton(
+                new Rect(panel.x + panel.width - 204f, panel.y + 98f, 190f, 22f));
 
             float bodyTop = panel.y + 130f;
             float columnWidth = (panel.width - 42f) * 0.5f;
+            int nearbyPercentile = _leaderboard == null
+                || _leaderboard.self_rank <= 0
+                || _leaderboard.total_players <= 0
+                ? 0
+                : Mathf.Clamp(
+                    Mathf.CeilToInt(_leaderboard.self_rank * 100f / _leaderboard.total_players),
+                    1,
+                    100);
+            string nearbyTitle = OverrankText.Get("Around me", "我的附近");
+            if (nearbyPercentile > 0)
+            {
+                nearbyTitle += OverrankText.IsSimplifiedChinese
+                    ? "（前 " + nearbyPercentile + "%）"
+                    : " (Top " + nearbyPercentile + "%)";
+            }
             GUI.Box(
                 new Rect(panel.x + 14f, bodyTop, columnWidth, 278f),
                 OverrankText.Get("Top players", "最高排名"));
             GUI.Box(
                 new Rect(panel.x + 28f + columnWidth, bodyTop, columnWidth, 278f),
-                OverrankText.Get("Around me", "我的附近"));
+                nearbyTitle);
             LeaderboardEntry[] top = _leaderboard == null || _leaderboard.entries == null
                 ? new LeaderboardEntry[0]
                 : _leaderboard.entries;
             LeaderboardEntry[] nearby = _leaderboard == null || _leaderboard.nearby == null
                 ? new LeaderboardEntry[0]
                 : _leaderboard.nearby;
-            int totalPlayers = _leaderboard == null ? 0 : _leaderboard.total_players;
-            float nearbyListTop = bodyTop + 28f;
-            float nearbyListHeight = 240f;
-            LeaderboardEntry unassistedSelf = FindSelfEntry(false);
-            LeaderboardEntry assistedSelf = FindSelfEntry(true);
-            if (unassistedSelf != null && assistedSelf != null)
-            {
-                DrawNearbyAnchorButtons(
-                    new Rect(panel.x + 36f + columnWidth, nearbyListTop, columnWidth - 16f, 24f),
-                    unassistedSelf,
-                    assistedSelf);
-                nearbyListTop += 28f;
-                nearbyListHeight -= 28f;
-            }
             DrawEntries(
                 new Rect(panel.x + 22f, bodyTop + 28f, columnWidth - 16f, 240f),
                 top,
-                ref _topScroll,
-                totalPlayers);
+                ref _topScroll);
+            Rect nearbyArea = new Rect(
+                panel.x + 36f + columnWidth,
+                bodyTop + 28f,
+                columnWidth - 16f,
+                240f);
+            if (_centerNearbyOnSelf)
+            {
+                CenterNearbyOnSelectedEntry(nearbyArea, nearby);
+            }
             DrawEntries(
-                new Rect(panel.x + 36f + columnWidth, nearbyListTop, columnWidth - 16f, nearbyListHeight),
+                nearbyArea,
                 nearby,
-                ref _nearbyScroll,
-                totalPlayers);
+                ref _nearbyScroll);
         }
 
         private LeaderboardEntry FindSelfEntry(bool overwashedUsed)
@@ -558,43 +576,99 @@ namespace Overrank
             return null;
         }
 
-        private void DrawNearbyAnchorButtons(
-            Rect area,
-            LeaderboardEntry unassistedSelf,
-            LeaderboardEntry assistedSelf)
+        private void DrawNearbyModeButton(Rect area)
         {
-            float gap = 4f;
-            float width = (area.width - gap) * 0.5f;
-            bool previousEnabled = GUI.enabled;
-            GUI.enabled = previousEnabled && !_requestRunning;
-            string unassistedLabel = OverrankText.Get("No bot", "无机器人") + " #" + unassistedSelf.rank;
-            string assistedLabel = OverrankText.Get("Bot", "机器人") + " #" + assistedSelf.rank;
-            if (GUI.Toggle(
-                    new Rect(area.x, area.y, width, area.height),
-                    _nearbyAnchor == 0,
-                    unassistedLabel)
-                && _nearbyAnchor != 0)
+            LeaderboardEntry unassistedSelf = FindSelfEntry(false);
+            LeaderboardEntry assistedSelf = FindSelfEntry(true);
+            LeaderboardEntry selectedSelf = null;
+            string label;
+            if (_nearbyMode == 1)
             {
-                _nearbyAnchor = 0;
-                RefreshBoard();
+                selectedSelf = unassistedSelf;
+                label = OverrankText.Get("No bot", "无机器人");
             }
-            if (GUI.Toggle(
-                    new Rect(area.x + width + gap, area.y, width, area.height),
-                    _nearbyAnchor == 1,
-                    assistedLabel)
-                && _nearbyAnchor != 1)
+            else if (_nearbyMode == 2)
             {
-                _nearbyAnchor = 1;
-                RefreshBoard();
+                selectedSelf = assistedSelf;
+                label = OverrankText.Get("Bot", "机器人");
+            }
+            else
+            {
+                if (_leaderboard != null
+                    && _leaderboard.self_entries != null
+                    && _leaderboard.self_entries.Length > 0)
+                {
+                    selectedSelf = _leaderboard.self_entries[0];
+                }
+                label = OverrankText.Get("Overall", "总表");
+            }
+            int selectedRank = selectedSelf == null ? 0 : selectedSelf.rank;
+            if (selectedRank <= 0
+                && _leaderboard != null
+                && _leaderboard.self_rank > 0
+                && (_nearbyMode == 0
+                    || (_nearbyMode == 1 && !_nearbySelectedOverwashed)
+                    || (_nearbyMode == 2 && _nearbySelectedOverwashed)))
+            {
+                selectedRank = _leaderboard.self_rank;
+            }
+            bool canSwitch = !_requestRunning && HasAnyPersonalRank();
+            bool previousEnabled = GUI.enabled;
+            GUI.enabled = previousEnabled && canSwitch;
+            if (GUI.Button(area, label + " " + (selectedRank <= 0 ? "--" : "#" + selectedRank)))
+            {
+                SwitchNearbyMode();
             }
             GUI.enabled = previousEnabled;
+        }
+
+        private bool HasAnyPersonalRank()
+        {
+            return (_leaderboard != null && _leaderboard.self_rank > 0)
+                || (_overallLeaderboard != null && _overallLeaderboard.self_rank > 0)
+                || (_unassistedLeaderboard != null && _unassistedLeaderboard.self_rank > 0)
+                || (_assistedLeaderboard != null && _assistedLeaderboard.self_rank > 0);
+        }
+
+        private void CenterNearbyOnSelectedEntry(Rect area, LeaderboardEntry[] entries)
+        {
+            _centerNearbyOnSelf = false;
+            if (entries == null || entries.Length == 0)
+            {
+                return;
+            }
+            int selectedIndex = -1;
+            for (int index = 0; index < entries.Length; index++)
+            {
+                LeaderboardEntry entry = entries[index];
+                if (entry == null || !string.Equals(entry.player_id, _playerId, StringComparison.Ordinal))
+                {
+                    continue;
+                }
+                if (entry.overwashed_used == _nearbySelectedOverwashed)
+                {
+                    selectedIndex = index;
+                    break;
+                }
+                if (selectedIndex < 0)
+                {
+                    selectedIndex = index;
+                }
+            }
+            if (selectedIndex < 0)
+            {
+                return;
+            }
+            const float rowHeight = 22f;
+            float contentHeight = Mathf.Max(area.height, entries.Length * rowHeight);
+            float centered = selectedIndex * rowHeight + rowHeight * 0.5f - area.height * 0.5f;
+            _nearbyScroll = new Vector2(0f, Mathf.Clamp(centered, 0f, contentHeight - area.height));
         }
 
         private void DrawEntries(
             Rect area,
             LeaderboardEntry[] entries,
-            ref Vector2 scrollPosition,
-            int totalPlayers)
+            ref Vector2 scrollPosition)
         {
             if (entries.Length == 0)
             {
@@ -619,19 +693,16 @@ namespace Overrank
                 string value = OverrankText.IsSimplifiedChinese
                     ? "分:" + entry.score + " 菜:" + entry.dishes
                     : "S:" + entry.score + " D:" + entry.dishes;
-                string percentile = self && totalPlayers > 0
-                    ? (OverrankText.IsSimplifiedChinese ? " 前" : " Top ")
-                        + Mathf.Clamp(Mathf.CeilToInt(entry.rank * 100f / totalPlayers), 1, 100)
-                        + "%"
-                    : string.Empty;
                 float rowY = index * rowHeight;
+                float rankWidth = 46f;
+                float nameWidth = Mathf.Clamp(content.width * 0.38f, 110f, 170f);
                 GUI.Label(
-                    new Rect(0f, rowY, 38f, rowHeight - 1f),
+                    new Rect(0f, rowY, rankWidth, rowHeight - 1f),
                     "#" + entry.rank);
                 GUI.Label(
-                    new Rect(38f, rowY, 58f, rowHeight - 1f),
-                    Truncate(entry.player_name, 7));
-                float valueX = 98f;
+                    new Rect(rankWidth, rowY, nameWidth, rowHeight - 1f),
+                    Truncate(entry.player_name, Mathf.Max(7, Mathf.FloorToInt(nameWidth / 8f))));
+                float valueX = rankWidth + nameWidth + 4f;
                 if (entry.overwashed_used && _overwashedIcon != null)
                 {
                     GUI.DrawTexture(
@@ -643,7 +714,7 @@ namespace Overrank
                 }
                 GUI.Label(
                     new Rect(valueX, rowY, content.width - valueX, rowHeight - 1f),
-                    value + percentile);
+                    value);
                 GUI.color = previous;
             }
             GUI.EndScrollView();
@@ -686,7 +757,7 @@ namespace Overrank
                     _selectedLevelName = displayLabel;
                     _lastLevelKey.Value = _selectedLevelKey;
                     _lastLevelName.Value = _selectedLevelName;
-                    _nearbyAnchor = -1;
+                    _nearbyMode = 0;
                     _showLevels = false;
                     RefreshBoard();
                 }
@@ -760,6 +831,11 @@ namespace Overrank
             _requestRunning = true;
             _requestError = null;
             _responseSummary = null;
+            string requestKey = CurrentLeaderboardCacheKey();
+            int requestMode = _nearbyMode;
+            string assistance = requestMode == 1
+                ? "unassisted"
+                : (requestMode == 2 ? "assisted" : "all");
             _topScroll = Vector2.zero;
             _nearbyScroll = Vector2.zero;
             _client.RequestLeaderboard(
@@ -767,33 +843,118 @@ namespace Overrank
                 _players,
                 _metric,
                 _playerId,
-                _nearbyAnchor < 0 ? (bool?)null : _nearbyAnchor == 1,
+                assistance,
                 delegate(LeaderboardResponse response, string error)
                 {
                     _requestRunning = false;
                     _requestError = error;
                     if (response != null)
                     {
-                        _leaderboard = response;
-                        _nearbyAnchor = response.self_rank > 0
-                            ? (response.nearby_overwashed_used ? 1 : 0)
-                            : -1;
-                        int topCount = response.entries == null ? 0 : response.entries.Length;
-                        int nearbyCount = response.nearby == null ? 0 : response.nearby.Length;
-                        _responseSummary = OverrankText.IsSimplifiedChinese
-                            ? "已加载 " + topCount + " 条成绩；你的排名："
-                                + (response.self_rank > 0 ? "#" + response.self_rank : "未上榜")
-                            : "Loaded " + topCount + " score(s); your rank: "
-                                + (response.self_rank > 0 ? "#" + response.self_rank : "not ranked");
-                        _log.LogInfo(
-                            "Leaderboard loaded: level=" + response.level_key
-                            + ", players=" + response.players
-                            + ", total=" + response.total_players
-                            + ", top=" + topCount
-                            + ", nearby=" + nearbyCount
-                            + ", selfRank=" + response.self_rank + ".");
+                        if (!string.Equals(requestKey, CurrentLeaderboardCacheKey(), StringComparison.Ordinal))
+                        {
+                            RefreshBoard();
+                            return;
+                        }
+                        CacheLeaderboard(requestKey, requestMode, response);
+                        ApplyLeaderboard(response, true);
                     }
                 });
+        }
+
+        private string CurrentLeaderboardCacheKey()
+        {
+            return (_selectedLevelKey ?? string.Empty)
+                + "|" + _players
+                + "|" + (_metric ?? string.Empty)
+                + "|" + (_playerId ?? string.Empty);
+        }
+
+        private void ClearLeaderboardCache()
+        {
+            _leaderboardCacheKey = null;
+            _overallLeaderboard = null;
+            _unassistedLeaderboard = null;
+            _assistedLeaderboard = null;
+        }
+
+        private LeaderboardResponse GetCachedLeaderboard(int mode)
+        {
+            if (!string.Equals(
+                    _leaderboardCacheKey,
+                    CurrentLeaderboardCacheKey(),
+                    StringComparison.Ordinal))
+            {
+                return null;
+            }
+            if (mode == 1)
+            {
+                return _unassistedLeaderboard;
+            }
+            if (mode == 2)
+            {
+                return _assistedLeaderboard;
+            }
+            return _overallLeaderboard;
+        }
+
+        private void CacheLeaderboard(string key, int mode, LeaderboardResponse response)
+        {
+            if (!string.Equals(_leaderboardCacheKey, key, StringComparison.Ordinal))
+            {
+                ClearLeaderboardCache();
+                _leaderboardCacheKey = key;
+            }
+            if (mode == 1)
+            {
+                _unassistedLeaderboard = response;
+            }
+            else if (mode == 2)
+            {
+                _assistedLeaderboard = response;
+            }
+            else
+            {
+                _overallLeaderboard = response;
+            }
+        }
+
+        private void SwitchNearbyMode()
+        {
+            _nearbyMode = (_nearbyMode + 1) % 3;
+            LeaderboardResponse cached = GetCachedLeaderboard(_nearbyMode);
+            if (cached != null)
+            {
+                _nearbyScroll = Vector2.zero;
+                ApplyLeaderboard(cached, false);
+                return;
+            }
+            RefreshBoard();
+        }
+
+        private void ApplyLeaderboard(LeaderboardResponse response, bool fromNetwork)
+        {
+            _leaderboard = response;
+            _nearbySelectedOverwashed = response.nearby_overwashed_used;
+            _centerNearbyOnSelf = true;
+            int topCount = response.entries == null ? 0 : response.entries.Length;
+            int nearbyCount = response.nearby == null ? 0 : response.nearby.Length;
+            int selfEntryCount = response.self_entries == null ? 0 : response.self_entries.Length;
+            _responseSummary = OverrankText.IsSimplifiedChinese
+                ? "已加载 " + topCount + " 条成绩；你的排名："
+                    + (response.self_rank > 0 ? "#" + response.self_rank : "未上榜")
+                : "Loaded " + topCount + " score(s); your rank: "
+                    + (response.self_rank > 0 ? "#" + response.self_rank : "not ranked");
+            if (fromNetwork)
+            {
+                _log.LogInfo(
+                    "Leaderboard loaded: level=" + response.level_key
+                    + ", players=" + response.players
+                    + ", total=" + response.total_players
+                    + ", top=" + topCount
+                    + ", nearby=" + nearbyCount
+                    + ", selfEntries=" + selfEntryCount
+                    + ", selfRank=" + response.self_rank + ".");
+            }
         }
 
         private void RefreshLevels()
@@ -834,7 +995,7 @@ namespace Overrank
                             _selectedLevelName = LevelIdentity.ResolveDisplayName(latest.level_key, label);
                             _lastLevelKey.Value = _selectedLevelKey;
                             _lastLevelName.Value = _selectedLevelName;
-                            _nearbyAnchor = -1;
+                            _nearbyMode = 0;
                             _showLevels = false;
                             RefreshBoard();
                         }

@@ -62,6 +62,7 @@ namespace Overrank
         public int level_id;
         public int players;
         public string metric;
+        public string assistance;
         public int total_players;
         public int self_rank;
         public bool nearby_overwashed_used;

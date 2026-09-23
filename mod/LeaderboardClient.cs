@@ -64,7 +64,7 @@ namespace Overrank
             int players,
             string metric,
             string playerId,
-            bool? aroundOverwashed,
+            string assistance,
             Action<LeaderboardResponse, string> callback)
         {
             string url = BaseUrl
@@ -72,11 +72,8 @@ namespace Overrank
                 + "?players=" + players
                 + "&metric=" + UnityWebRequest.EscapeURL(metric)
                 + "&player_id=" + UnityWebRequest.EscapeURL(playerId)
+                + "&assistance=" + UnityWebRequest.EscapeURL(assistance)
                 + "&limit=100&around=100";
-            if (aroundOverwashed.HasValue)
-            {
-                url += "&around_overwashed=" + (aroundOverwashed.Value ? "true" : "false");
-            }
             _host.StartCoroutine(GetJson(url, callback));
         }
 

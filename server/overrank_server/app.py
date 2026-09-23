@@ -5,7 +5,7 @@ from contextlib import asynccontextmanager
 from fastapi import Depends, FastAPI, Header, HTTPException, Query
 
 from .database import connect, initialise, save_submission
-from .schemas import Metric, Submission
+from .schemas import Assistance, Metric, Submission
 
 
 def require_api_key(x_overrank_key: str | None = Header(default=None)) -> None:
@@ -20,7 +20,7 @@ async def lifespan(_: FastAPI):
     yield
 
 
-app = FastAPI(title="Overrank", version="0.2.2", lifespan=lifespan)
+app = FastAPI(title="Overrank", version="0.2.3", lifespan=lifespan)
 
 
 def board_order(metric: Metric) -> str:
@@ -71,27 +71,31 @@ def leaderboard(
     limit: int = Query(default=100, ge=1, le=100),
     around: int = Query(default=100, ge=1, le=100),
     around_overwashed: bool | None = Query(default=None),
+    assistance: Assistance = Query(default="all"),
 ) -> dict:
     order = board_order(metric)
     requested_overwashed = around_overwashed if isinstance(around_overwashed, bool) else None
+    selected_assistance = assistance if assistance in ("all", "unassisted", "assisted") else "all"
+    board_filter = "WHERE level_key = ? AND player_count = ? AND metric = ?"
+    board_parameters = (level_key, players, metric)
+    if selected_assistance != "all":
+        board_filter += " AND overwashed_used = ?"
+        board_parameters += (1 if selected_assistance == "assisted" else 0,)
     common = f"""
         WITH ranked AS (
             SELECT *, ROW_NUMBER() OVER (ORDER BY {order}) AS rank_position
             FROM personal_bests
-            WHERE level_key = ? AND player_count = ? AND metric = ?
+            {board_filter}
         )
     """
     with connect() as connection:
         board_rows = connection.execute(
             common + " SELECT * FROM ranked ORDER BY rank_position LIMIT ?",
-            (level_key, players, metric, limit),
+            board_parameters + (limit,),
         ).fetchall()
         total_row = connection.execute(
-            """
-            SELECT COUNT(*) AS total FROM personal_bests
-            WHERE level_key = ? AND player_count = ? AND metric = ?
-            """,
-            (level_key, players, metric),
+            "SELECT COUNT(*) AS total FROM personal_bests " + board_filter,
+            board_parameters,
         ).fetchone()
         self_rows = []
         self_row = None
@@ -99,10 +103,10 @@ def leaderboard(
         if player_id:
             self_rows = connection.execute(
                 common + " SELECT * FROM ranked WHERE player_id = ? ORDER BY rank_position",
-                (level_key, players, metric, player_id),
+                board_parameters + (player_id,),
             ).fetchall()
             if self_rows:
-                if requested_overwashed is None:
+                if selected_assistance != "all" or requested_overwashed is None:
                     self_row = self_rows[0]
                 else:
                     self_row = next(
@@ -123,7 +127,7 @@ def leaderboard(
                     first = max(1, last - window_size + 1)
                 nearby_rows = connection.execute(
                     common + " SELECT * FROM ranked WHERE rank_position BETWEEN ? AND ? ORDER BY rank_position",
-                    (level_key, players, metric, first, last),
+                    board_parameters + (first, last),
                 ).fetchall()
         level_row = connection.execute(
             """
@@ -141,6 +145,7 @@ def leaderboard(
         "level_id": -1 if level_row is None else int(level_row["level_id"]),
         "players": players,
         "metric": metric,
+        "assistance": selected_assistance,
         "total_players": int(total_row["total"]),
         "self_rank": 0 if self_row is None else int(self_row["rank_position"]),
         "nearby_overwashed_used": False if self_row is None else bool(self_row["overwashed_used"]),
