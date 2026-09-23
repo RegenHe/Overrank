@@ -23,6 +23,10 @@ namespace Overrank
         public bool overwashed_used;
         public string overwashed_version;
         public string completed_at;
+        public string client_id;
+        public string lobby_key;
+        public string attempt_nonce;
+        public string round_id;
     }
 
     [Serializable]
@@ -32,11 +36,59 @@ namespace Overrank
     }
 
     [Serializable]
-    public sealed class SubmissionResponse
+    public sealed class PresenceHeartbeat
     {
-        public bool accepted;
-        public bool duplicate;
-        public string level_key;
+        public string client_id;
+        public string player_id;
+        public string lobby_key;
+        public string level_uid;
+        public string attempt_nonce;
+        public string round_id;
+        public int local_players;
+        public bool in_level;
+        public string mod_version;
+    }
+
+    [Serializable]
+    public sealed class PresenceResponse
+    {
+        public int online_clients;
+        public int online_players;
+        public int playing_players;
+        public int heartbeat_seconds;
+        public bool round_valid;
+        public string round_id;
+        public bool overwashed_used;
+    }
+
+    [Serializable]
+    public sealed class RoundJoinRequest
+    {
+        public string client_id;
+        public string player_id;
+        public string lobby_key;
+        public string level_uid;
+        public int player_count;
+        public string attempt_nonce;
+        public bool overwashed_used;
+        public string overwashed_version;
+    }
+
+    [Serializable]
+    public sealed class RoundAssistanceRequest
+    {
+        public string client_id;
+        public string attempt_nonce;
+        public string overwashed_version;
+    }
+
+    [Serializable]
+    public sealed class RoundResponse
+    {
+        public string round_id;
+        public bool overwashed_used;
+        public string overwashed_version;
+        public int member_count;
     }
 
     [Serializable]

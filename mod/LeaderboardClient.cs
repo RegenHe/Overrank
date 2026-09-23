@@ -4,7 +4,6 @@ using System.Collections.Generic;
 using System.IO;
 using System.Text;
 using BepInEx;
-using BepInEx.Configuration;
 using BepInEx.Logging;
 using UnityEngine;
 using UnityEngine.Networking;
@@ -16,11 +15,14 @@ namespace Overrank
         private readonly MonoBehaviour _host;
         private readonly ManualLogSource _log;
         private readonly string _serverUrl;
-        private readonly ConfigEntry<string> _apiKey;
-        private readonly ConfigEntry<int> _timeoutSeconds;
+        private readonly string _apiKey;
+        private readonly int _timeoutSeconds;
         private readonly string _pendingPath;
         private readonly List<ScoreSubmission> _pending = new List<ScoreSubmission>();
         private bool _queueRunning;
+        private bool _presenceRunning;
+        private bool _roundJoinRunning;
+        private bool _assistanceRunning;
         private string _lastReportedError;
 
         internal string Status { get; private set; }
@@ -31,8 +33,8 @@ namespace Overrank
             MonoBehaviour host,
             ManualLogSource log,
             string serverUrl,
-            ConfigEntry<string> apiKey,
-            ConfigEntry<int> timeoutSeconds)
+            string apiKey,
+            int timeoutSeconds)
         {
             _host = host;
             _log = log;
@@ -81,6 +83,39 @@ namespace Overrank
         {
             string url = BaseUrl + "/api/v1/players/" + UnityWebRequest.EscapeURL(playerId) + "/levels";
             _host.StartCoroutine(GetJson(url, callback));
+        }
+
+        internal bool SendPresence(PresenceHeartbeat heartbeat, Action<PresenceResponse, string> callback)
+        {
+            if (_presenceRunning || heartbeat == null)
+            {
+                return false;
+            }
+            _host.StartCoroutine(PostPresence(heartbeat, callback));
+            return true;
+        }
+
+        internal bool JoinRound(RoundJoinRequest request, Action<RoundResponse, string> callback)
+        {
+            if (_roundJoinRunning || request == null)
+            {
+                return false;
+            }
+            _host.StartCoroutine(PostRoundJoin(request, callback));
+            return true;
+        }
+
+        internal bool ReportAssistance(
+            string roundId,
+            RoundAssistanceRequest request,
+            Action<RoundResponse, string> callback)
+        {
+            if (_assistanceRunning || string.IsNullOrEmpty(roundId) || request == null)
+            {
+                return false;
+            }
+            _host.StartCoroutine(PostRoundAssistance(roundId, request, callback));
+            return true;
         }
 
         private string BaseUrl
@@ -138,6 +173,110 @@ namespace Overrank
             }
         }
 
+        private IEnumerator PostPresence(PresenceHeartbeat heartbeat, Action<PresenceResponse, string> callback)
+        {
+            _presenceRunning = true;
+            string responseBody = null;
+            string error = null;
+            yield return PostJson(
+                BaseUrl + "/api/v1/presence",
+                JsonUtility.ToJson(heartbeat),
+                delegate(string response, string requestError)
+                {
+                    responseBody = response;
+                    error = requestError;
+                });
+            _presenceRunning = false;
+
+            PresenceResponse parsed = null;
+            if (string.IsNullOrEmpty(error))
+            {
+                try
+                {
+                    parsed = JsonUtility.FromJson<PresenceResponse>(responseBody);
+                }
+                catch (Exception exception)
+                {
+                    error = OverrankText.Get("Invalid presence response: ", "在线状态响应无效：") + exception.Message;
+                }
+            }
+            if (callback != null)
+            {
+                callback(parsed, error);
+            }
+        }
+
+        private IEnumerator PostRoundJoin(RoundJoinRequest request, Action<RoundResponse, string> callback)
+        {
+            _roundJoinRunning = true;
+            RoundResponse parsed = null;
+            string responseBody = null;
+            string error = null;
+            yield return PostJson(
+                BaseUrl + "/api/v1/rounds/join",
+                JsonUtility.ToJson(request),
+                delegate(string response, string requestError)
+                {
+                    responseBody = response;
+                    error = requestError;
+                });
+            _roundJoinRunning = false;
+            if (string.IsNullOrEmpty(error))
+            {
+                try
+                {
+                    parsed = JsonUtility.FromJson<RoundResponse>(responseBody);
+                    if (parsed == null || string.IsNullOrEmpty(parsed.round_id))
+                    {
+                        error = OverrankText.Get("Server returned an invalid round", "服务器返回了无效对局");
+                    }
+                }
+                catch (Exception exception)
+                {
+                    error = OverrankText.Get("Invalid round response: ", "对局响应无效：") + exception.Message;
+                }
+            }
+            if (callback != null)
+            {
+                callback(parsed, error);
+            }
+        }
+
+        private IEnumerator PostRoundAssistance(
+            string roundId,
+            RoundAssistanceRequest request,
+            Action<RoundResponse, string> callback)
+        {
+            _assistanceRunning = true;
+            RoundResponse parsed = null;
+            string responseBody = null;
+            string error = null;
+            yield return PostJson(
+                BaseUrl + "/api/v1/rounds/" + UnityWebRequest.EscapeURL(roundId) + "/assistance",
+                JsonUtility.ToJson(request),
+                delegate(string response, string requestError)
+                {
+                    responseBody = response;
+                    error = requestError;
+                });
+            _assistanceRunning = false;
+            if (string.IsNullOrEmpty(error))
+            {
+                try
+                {
+                    parsed = JsonUtility.FromJson<RoundResponse>(responseBody);
+                }
+                catch (Exception exception)
+                {
+                    error = OverrankText.Get("Invalid assistance response: ", "机器人状态响应无效：") + exception.Message;
+                }
+            }
+            if (callback != null)
+            {
+                callback(parsed, error);
+            }
+        }
+
         private IEnumerator PostJson(string url, string json, Action<string, string> callback)
         {
             byte[] body = Encoding.UTF8.GetBytes(json);
@@ -147,7 +286,7 @@ namespace Overrank
                 request.downloadHandler = new DownloadHandlerBuffer();
                 request.SetRequestHeader("Content-Type", "application/json");
                 AddHeaders(request);
-                request.timeout = Mathf.Clamp(_timeoutSeconds.Value, 2, 60);
+                request.timeout = Mathf.Clamp(_timeoutSeconds, 2, 60);
                 yield return request.SendWebRequest();
                 string error = RequestError(request);
                 callback(request.downloadHandler == null ? string.Empty : request.downloadHandler.text, error);
@@ -159,7 +298,7 @@ namespace Overrank
             using (UnityWebRequest request = UnityWebRequest.Get(url))
             {
                 AddHeaders(request);
-                request.timeout = Mathf.Clamp(_timeoutSeconds.Value, 2, 60);
+                request.timeout = Mathf.Clamp(_timeoutSeconds, 2, 60);
                 yield return request.SendWebRequest();
                 string error = RequestError(request);
                 if (!string.IsNullOrEmpty(error))
@@ -291,7 +430,7 @@ namespace Overrank
 
         private void AddHeaders(UnityWebRequest request)
         {
-            string key = _apiKey.Value == null ? string.Empty : _apiKey.Value.Trim();
+            string key = _apiKey == null ? string.Empty : _apiKey.Trim();
             if (key.Length > 0)
             {
                 request.SetRequestHeader("X-Overrank-Key", key);

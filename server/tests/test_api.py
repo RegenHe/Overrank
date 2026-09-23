@@ -11,9 +11,17 @@ sys.path.insert(0, str(SERVER_ROOT))
 TEST_ROOT = SERVER_ROOT / "tmp" / "tests"
 os.environ["OVERRANK_DATABASE"] = str(TEST_ROOT / "overrank-test.sqlite3")
 
-from overrank_server.app import leaderboard, played_levels, submit  # noqa: E402
+import overrank_server.app as app_module  # noqa: E402
+from overrank_server.app import (  # noqa: E402
+    join_round,
+    leaderboard,
+    played_levels,
+    presence,
+    report_assistance,
+    submit,
+)
 from overrank_server.database import connect, create_schema, initialise  # noqa: E402
-from overrank_server.schemas import Submission  # noqa: E402
+from overrank_server.schemas import Presence, RoundAssistance, RoundJoin, Submission  # noqa: E402
 
 
 class OverrankApiTests(unittest.TestCase):
@@ -40,6 +48,10 @@ class OverrankApiTests(unittest.TestCase):
         completed_at="2026-09-22T00:00:00Z",
         overwashed_used=False,
         overwashed_version="",
+        client_id="",
+        lobby_key="",
+        attempt_nonce="",
+        round_id="",
     ):
         return Submission(
             submission_id=submission_id,
@@ -58,7 +70,157 @@ class OverrankApiTests(unittest.TestCase):
             overwashed_used=overwashed_used,
             overwashed_version=overwashed_version,
             completed_at=completed_at,
+            client_id=client_id,
+            lobby_key=lobby_key,
+            attempt_nonce=attempt_nonce,
+            round_id=round_id,
         )
+
+    def round_join(
+        self,
+        client_id,
+        player_id,
+        lobby_key,
+        level_uid,
+        attempt_nonce,
+        overwashed_used=False,
+    ):
+        return join_round(
+            RoundJoin(
+                client_id=client_id,
+                player_id=player_id,
+                lobby_key=lobby_key,
+                level_uid=level_uid,
+                player_count=2,
+                attempt_nonce=attempt_nonce,
+                overwashed_used=overwashed_used,
+                overwashed_version="1.7.0" if overwashed_used else "",
+            )
+        )
+
+    def heartbeat(self, client_id, player_id, lobby_key, attempt_nonce, round_id):
+        return presence(
+            Presence(
+                client_id=client_id,
+                player_id=player_id,
+                lobby_key=lobby_key,
+                level_uid="official-online-test",
+                attempt_nonce=attempt_nonce,
+                round_id=round_id,
+                local_players=1,
+                in_level=True,
+                mod_version="0.3.0",
+            )
+        )
+
+    def test_clients_join_one_round_and_share_assistance(self):
+        board = "official-online-shared-assistance"
+        lobby = "a" * 64
+        nonce_a = "30000000-0000-0000-0000-000000000011"
+        nonce_b = "30000000-0000-0000-0000-000000000021"
+        first_round = self.round_join("client-online-000a", "player-online-000a", lobby, board, nonce_a)
+        second_round = self.round_join("client-online-000b", "player-online-000b", lobby, board, nonce_b)
+        self.assertEqual(first_round["round_id"], second_round["round_id"])
+        self.assertEqual(second_round["member_count"], 2)
+
+        assisted = report_assistance(
+            first_round["round_id"],
+            RoundAssistance(
+                client_id="client-online-000b",
+                attempt_nonce=nonce_b,
+                overwashed_version="1.7.0",
+            ),
+        )
+        self.assertTrue(assisted["overwashed_used"])
+
+        first = submit(self.payload(
+            "30000000-0000-0000-0000-000000000010", "player-online-000a",
+            board,
+            1234,
+            12,
+            client_id="client-online-000a",
+            lobby_key=lobby,
+            attempt_nonce=nonce_a,
+            round_id=first_round["round_id"],
+        ))
+        second = submit(self.payload(
+            "30000000-0000-0000-0000-000000000020", "player-online-000b",
+            board, 1234, 12, client_id="client-online-000b", lobby_key=lobby,
+            attempt_nonce=nonce_b, round_id=first_round["round_id"],
+        ))
+        self.assertTrue(first["overwashed_used"])
+        self.assertTrue(second["overwashed_used"])
+
+        result = leaderboard(board, 2, "score", "player-online-000a", 10, 3)
+        self.assertEqual(result["total_players"], 2)
+        self.assertTrue(all(row["overwashed_used"] for row in result["entries"]))
+
+    def test_same_attempt_is_idempotent_and_restart_creates_new_round(self):
+        board = "official-online-restart"
+        lobby = "b" * 64
+        nonce_one = "30000000-0000-0000-0000-000000000031"
+        nonce_two = "30000000-0000-0000-0000-000000000032"
+        first = self.round_join("client-restart-000a", "player-restart-000a", lobby, board, nonce_one)
+        repeated = self.round_join("client-restart-000a", "player-restart-000a", lobby, board, nonce_one)
+        restarted = self.round_join("client-restart-000a", "player-restart-000a", lobby, board, nonce_two)
+        old_retry = self.round_join("client-restart-000a", "player-restart-000a", lobby, board, nonce_one)
+        self.assertEqual(first["round_id"], repeated["round_id"])
+        self.assertNotEqual(first["round_id"], restarted["round_id"])
+        self.assertEqual(first["round_id"], old_retry["round_id"])
+
+    def test_teammate_without_overrank_does_not_block_submission(self):
+        board = "official-online-single-client"
+        lobby = "c" * 64
+        nonce = "30000000-0000-0000-0000-000000000041"
+        joined = self.round_join("client-only-new-mod", "player-only-new-mod", lobby, board, nonce)
+        result = submit(
+            self.payload(
+                "30000000-0000-0000-0000-000000000030",
+                "player-only-new-mod",
+                board,
+                888,
+                8,
+                client_id="client-only-new-mod",
+                lobby_key=lobby,
+                attempt_nonce=nonce,
+                round_id=joined["round_id"],
+            )
+        )
+        self.assertTrue(result["accepted"])
+        self.assertEqual(leaderboard(board, 2, "score", "player-only-new-mod", 10, 3)["total_players"], 1)
+
+    def test_presence_validates_round_and_reports_counts(self):
+        board = "official-online-presence"
+        lobby = "d" * 64
+        nonce = "30000000-0000-0000-0000-000000000051"
+        joined = self.round_join("client-presence-01", "player-presence-01", lobby, board, nonce)
+        status = self.heartbeat(
+            "client-presence-01", "player-presence-01", lobby, nonce, joined["round_id"]
+        )
+        self.assertTrue(status["round_valid"])
+        self.assertEqual(status["round_id"], joined["round_id"])
+        self.assertGreaterEqual(status["online_clients"], 1)
+        self.assertGreaterEqual(status["playing_players"], 1)
+
+    def test_submission_recovers_round_after_server_memory_restart(self):
+        board = "official-online-recovery"
+        lobby = "e" * 64
+        nonce = "30000000-0000-0000-0000-000000000061"
+        joined = self.round_join("client-recovery-01", "player-recovery-01", lobby, board, nonce, True)
+        app_module._rounds.clear()
+        app_module._active_round_by_lobby.clear()
+        app_module._attempt_rounds.clear()
+        result = submit(
+            self.payload(
+                "30000000-0000-0000-0000-000000000060", "player-recovery-01",
+                board, 999, 9, overwashed_used=True, overwashed_version="1.7.0",
+                client_id="client-recovery-01", lobby_key=lobby,
+                attempt_nonce=nonce, round_id=joined["round_id"],
+            )
+        )
+        self.assertTrue(result["accepted"])
+        self.assertTrue(result["overwashed_used"])
+        self.assertNotEqual(result["round_id"], joined["round_id"])
 
     def test_best_attempt_per_player_and_nearby_rank(self):
         board = "oc2diy-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"

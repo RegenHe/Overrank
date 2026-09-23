@@ -22,8 +22,6 @@ namespace Overrank
         private Harmony _harmony;
         private LeaderboardClient _client;
         private string _serverUrl;
-        private ConfigEntry<string> _apiKey;
-        private ConfigEntry<int> _timeoutSeconds;
         private ConfigEntry<string> _installId;
         private ConfigEntry<string> _lastLevelKey;
         private ConfigEntry<string> _lastLevelName;
@@ -38,6 +36,8 @@ namespace Overrank
         private bool _requestRunning;
         private string _requestError;
         private string _responseSummary;
+        private string _presenceSummary;
+        private string _clientId;
         private string _playerId;
         private string _playerName = "Player";
         private string _selectedLevelKey;
@@ -51,6 +51,15 @@ namespace Overrank
         private Vector2 _topScroll;
         private Vector2 _nearbyScroll;
         private float _nextIdentityRefresh;
+        private float _nextContextRefresh;
+        private float _nextPresenceHeartbeat;
+        private string _lastPresenceFingerprint;
+        private bool _attemptInLevel;
+        private string _attemptLevelUid;
+        private string _attemptNonce;
+        private int _attemptSessionToken;
+        private string _roundId;
+        private bool _roundAssistanceKnown;
         private float _lastCaptureTime = -100f;
         private string _lastCaptureFingerprint;
         private LeaderboardResponse _leaderboard;
@@ -64,12 +73,6 @@ namespace Overrank
         {
             _log = Logger;
             _serverUrl = BuildConfig.DefaultServerUrl;
-            _apiKey = Config.Bind("Server", "ApiKey", BuildConfig.DefaultApiKey, "Optional server API key.");
-            _timeoutSeconds = Config.Bind(
-                "Server",
-                "TimeoutSeconds",
-                8,
-                new ConfigDescription("Network timeout in seconds.", new AcceptableValueRange<int>(2, 60)));
             _installId = Config.Bind("Identity", "InstallId", string.Empty, "Fallback anonymous installation identifier.");
             _lastLevelKey = Config.Bind("State", "LastLevelKey", string.Empty, "Last played level shown in Overrank.");
             _lastLevelName = Config.Bind("State", "LastLevelName", string.Empty, "Last played level display name.");
@@ -86,11 +89,12 @@ namespace Overrank
             _selectedLevelKey = _lastLevelKey.Value ?? string.Empty;
             _selectedLevelName = _lastLevelName.Value ?? string.Empty;
             _players = Mathf.Clamp(_lastPlayerCount.Value, 1, 4);
-            _playerId = HashIdentity("install:" + _installId.Value);
+            _clientId = HashIdentity("install:" + _installId.Value);
+            _playerId = _clientId;
 
             CreateIconTextures();
             RefreshIdentity();
-            _client = new LeaderboardClient(this, _log, _serverUrl, _apiKey, _timeoutSeconds);
+            _client = new LeaderboardClient(this, _log, _serverUrl, BuildConfig.DefaultApiKey, 8);
             _client.SubmissionUploaded += OnSubmissionUploaded;
             _client.Start();
 
@@ -106,6 +110,11 @@ namespace Overrank
             {
                 _nextIdentityRefresh = Time.unscaledTime + 5f;
                 RefreshIdentity();
+            }
+            if (Time.unscaledTime >= _nextContextRefresh)
+            {
+                _nextContextRefresh = Time.unscaledTime + 1f;
+                UpdateAttemptAndPresence();
             }
         }
 
@@ -190,7 +199,11 @@ namespace Overrank
                 }
                 bool overwashedUsed;
                 string overwashedVersion;
-                OverwashedIntegration.ReadRoundUsage(out overwashedUsed, out overwashedVersion);
+                OverwashedIntegration.ReadCurrentAssistance(out overwashedUsed, out overwashedVersion);
+                EnsureAttempt(level.Uid, session.GetHashCode(), false);
+                string lobbyKey;
+                int ignoredMemberCount;
+                SessionContext.TryReadLobby(out lobbyKey, out ignoredMemberCount);
                 ScoreSubmission submission = new ScoreSubmission
                 {
                     submission_id = Guid.NewGuid().ToString(),
@@ -208,7 +221,11 @@ namespace Overrank
                     mod_version = PluginVersion,
                     overwashed_used = overwashedUsed,
                     overwashed_version = overwashedVersion,
-                    completed_at = DateTime.UtcNow.ToString("o")
+                    completed_at = DateTime.UtcNow.ToString("o"),
+                    client_id = _clientId,
+                    lobby_key = lobbyKey,
+                    attempt_nonce = _attemptNonce,
+                    round_id = _roundId
                 };
 
                 _selectedLevelKey = level.Uid;
@@ -248,6 +265,214 @@ namespace Overrank
             }
             catch
             {
+            }
+        }
+
+        private void EnsureAttempt(string levelUid, int sessionToken, bool newIfEntering)
+        {
+            if ((newIfEntering && !_attemptInLevel)
+                || string.IsNullOrEmpty(_attemptNonce)
+                || !string.Equals(_attemptLevelUid, levelUid, StringComparison.Ordinal)
+                || _attemptSessionToken != sessionToken)
+            {
+                _attemptNonce = Guid.NewGuid().ToString();
+                _attemptLevelUid = levelUid ?? string.Empty;
+                _attemptSessionToken = sessionToken;
+                _roundId = string.Empty;
+                _roundAssistanceKnown = false;
+                _nextPresenceHeartbeat = 0f;
+            }
+            _attemptInLevel = true;
+        }
+
+        private void UpdateAttemptAndPresence()
+        {
+            LevelIdentity activeLevel = null;
+            bool inLevel = TryReadActiveLevel(out activeLevel);
+            if (inLevel)
+            {
+                EnsureAttempt(
+                    activeLevel.Uid,
+                    GameUtils.GetGameSession().GetHashCode(),
+                    true);
+            }
+            else if (_attemptInLevel)
+            {
+                _attemptInLevel = false;
+            }
+
+            string lobbyKey;
+            int ignoredMemberCount;
+            SessionContext.TryReadLobby(out lobbyKey, out ignoredMemberCount);
+            int localPlayers = 1;
+            try
+            {
+                localPlayers = Mathf.Clamp(
+                    (int)UserSystemUtils.LocalUserCount(ClientUserSystem.m_Users, true),
+                    1,
+                    4);
+            }
+            catch
+            {
+            }
+
+            string levelUid = inLevel && activeLevel != null ? activeLevel.Uid : string.Empty;
+            string nonce = inLevel ? _attemptNonce : string.Empty;
+            int playerCount = 1;
+            try
+            {
+                playerCount = Mathf.Clamp(ClientUserSystem.m_Users == null ? 1 : ClientUserSystem.m_Users.Count, 1, 4);
+            }
+            catch
+            {
+            }
+
+            bool overwashedUsed = false;
+            string overwashedVersion = string.Empty;
+            if (inLevel)
+            {
+                OverwashedIntegration.ReadCurrentAssistance(out overwashedUsed, out overwashedVersion);
+            }
+
+            if (inLevel && !string.IsNullOrEmpty(lobbyKey) && string.IsNullOrEmpty(_roundId))
+            {
+                string joiningNonce = _attemptNonce;
+                _client.JoinRound(
+                    new RoundJoinRequest
+                    {
+                        client_id = _clientId,
+                        player_id = _playerId,
+                        lobby_key = lobbyKey,
+                        level_uid = levelUid,
+                        player_count = playerCount,
+                        attempt_nonce = joiningNonce,
+                        overwashed_used = overwashedUsed,
+                        overwashed_version = overwashedVersion
+                    },
+                    delegate(RoundResponse response, string error)
+                    {
+                        if (response != null
+                            && string.IsNullOrEmpty(error)
+                            && string.Equals(_attemptNonce, joiningNonce, StringComparison.Ordinal))
+                        {
+                            _roundId = response.round_id ?? string.Empty;
+                            _roundAssistanceKnown = response.overwashed_used;
+                            _nextPresenceHeartbeat = 0f;
+                        }
+                    });
+            }
+
+            if (inLevel
+                && overwashedUsed
+                && !_roundAssistanceKnown
+                && !string.IsNullOrEmpty(_roundId))
+            {
+                string reportingRound = _roundId;
+                string reportingNonce = _attemptNonce;
+                _client.ReportAssistance(
+                    reportingRound,
+                    new RoundAssistanceRequest
+                    {
+                        client_id = _clientId,
+                        attempt_nonce = reportingNonce,
+                        overwashed_version = overwashedVersion
+                    },
+                    delegate(RoundResponse response, string error)
+                    {
+                        if (!string.Equals(_attemptNonce, reportingNonce, StringComparison.Ordinal)
+                            || !string.Equals(_roundId, reportingRound, StringComparison.Ordinal))
+                        {
+                            return;
+                        }
+                        if (response != null && string.IsNullOrEmpty(error))
+                        {
+                            _roundAssistanceKnown = response.overwashed_used;
+                        }
+                        else if (!string.IsNullOrEmpty(error) && error.IndexOf("HTTP 404", StringComparison.Ordinal) >= 0)
+                        {
+                            _roundId = string.Empty;
+                            _roundAssistanceKnown = false;
+                        }
+                    });
+            }
+
+            string heartbeatRound = inLevel ? _roundId : string.Empty;
+            string fingerprint = lobbyKey + "|" + inLevel + "|" + levelUid + "|" + nonce + "|" + heartbeatRound + "|" + localPlayers;
+            if (Time.unscaledTime < _nextPresenceHeartbeat
+                && string.Equals(fingerprint, _lastPresenceFingerprint, StringComparison.Ordinal))
+            {
+                return;
+            }
+
+            bool started = _client.SendPresence(
+                new PresenceHeartbeat
+                {
+                    client_id = _clientId,
+                    player_id = _playerId,
+                    lobby_key = lobbyKey,
+                    level_uid = levelUid,
+                    attempt_nonce = nonce,
+                    round_id = heartbeatRound,
+                    local_players = localPlayers,
+                    in_level = inLevel,
+                    mod_version = PluginVersion
+                },
+                delegate(PresenceResponse response, string error)
+                {
+                    if (response != null && string.IsNullOrEmpty(error))
+                    {
+                        _presenceSummary = OverrankText.IsSimplifiedChinese
+                            ? "在线 " + response.online_players + " · 游玩中 " + response.playing_players
+                            : "Online " + response.online_players + " · Playing " + response.playing_players;
+                        if (!string.IsNullOrEmpty(heartbeatRound)
+                            && string.Equals(_attemptNonce, nonce, StringComparison.Ordinal)
+                            && string.Equals(_roundId, heartbeatRound, StringComparison.Ordinal))
+                        {
+                            if (!response.round_valid)
+                            {
+                                _roundId = string.Empty;
+                                _roundAssistanceKnown = false;
+                                _nextPresenceHeartbeat = 0f;
+                            }
+                            else if (response.overwashed_used)
+                            {
+                                _roundAssistanceKnown = true;
+                            }
+                        }
+                    }
+                });
+            if (started)
+            {
+                _lastPresenceFingerprint = fingerprint;
+                _nextPresenceHeartbeat = Time.unscaledTime + 60f;
+            }
+        }
+
+        private static bool TryReadActiveLevel(out LevelIdentity level)
+        {
+            level = null;
+            try
+            {
+                GameSession session = GameUtils.GetGameSession();
+                if (session == null || session.LevelSettings == null)
+                {
+                    return false;
+                }
+                SceneDirectoryData.PerPlayerCountDirectoryEntry variant = session.LevelSettings.SceneDirectoryVarientEntry;
+                string activeScene = UnityEngine.SceneManagement.SceneManager.GetActiveScene().name;
+                if (variant == null
+                    || string.IsNullOrEmpty(variant.SceneName)
+                    || !string.Equals(activeScene, variant.SceneName, StringComparison.OrdinalIgnoreCase))
+                {
+                    return false;
+                }
+                level = LevelIdentity.Read(session);
+                return level != null && !string.IsNullOrEmpty(level.Uid);
+            }
+            catch
+            {
+                level = null;
+                return false;
             }
         }
 
@@ -442,7 +667,6 @@ namespace Overrank
                 _showLevels = true;
                 RefreshLevels();
             }
-
             if (_showLevels)
             {
                 DrawLevels(panel);
@@ -459,7 +683,20 @@ namespace Overrank
                     : (!string.IsNullOrEmpty(_responseSummary)
                         ? _responseSummary
                         : (_client == null ? string.Empty : _client.Status)));
-            GUI.Label(new Rect(panel.x + 14f, panel.y + panel.height - 25f, panel.width - 28f, 20f), networkStatus ?? string.Empty);
+            float statusTop = panel.y + panel.height - 25f;
+            float presenceWidth = string.IsNullOrEmpty(_presenceSummary) ? 0f : 270f;
+            GUI.Label(
+                new Rect(panel.x + 14f, statusTop, panel.width - 28f - presenceWidth, 20f),
+                networkStatus ?? string.Empty);
+            if (presenceWidth > 0f)
+            {
+                float textWidth = Mathf.Min(
+                    presenceWidth,
+                    GUI.skin.label.CalcSize(new GUIContent(_presenceSummary)).x + 4f);
+                GUI.Label(
+                    new Rect(panel.x + panel.width - textWidth - 14f, statusTop, textWidth, 20f),
+                    _presenceSummary);
+            }
         }
 
         private void DrawLeaderboard(Rect panel)

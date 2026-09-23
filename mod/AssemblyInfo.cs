@@ -13,7 +13,7 @@ namespace Overrank
 {
     internal static class BuildInfo
     {
-        internal const string Version = "0.2.7";
+        internal const string Version = "0.3.0";
         internal const string AssemblyVersion = Version + ".0";
     }
 }
