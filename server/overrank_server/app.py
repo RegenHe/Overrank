@@ -33,7 +33,7 @@ async def lifespan(_: FastAPI):
     yield
 
 
-app = FastAPI(title="Overrank", version="1.0.0", lifespan=lifespan)
+app = FastAPI(title="Overrank", version="1.1.0", lifespan=lifespan)
 
 
 def _active_presence(now: float | None = None) -> list[dict]:
@@ -161,6 +161,16 @@ def board_order(metric: Metric) -> str:
     return "score DESC, dishes DESC, completed_at ASC, submission_id ASC"
 
 
+def rank_order(metric: Metric) -> str:
+    return "dishes DESC" if metric == "dishes" else "score DESC"
+
+
+def rank_percentile(rank: int, total: int) -> int:
+    if rank <= 0 or total <= 0:
+        return 0
+    return min(100, max(1, (rank * 100 + total - 1) // total))
+
+
 def entry(row) -> dict:
     return {
         "rank": int(row["rank_position"]),
@@ -274,6 +284,7 @@ def leaderboard(
     assistance: Assistance = Query(default="all"),
 ) -> dict:
     order = board_order(metric)
+    ranking = rank_order(metric)
     requested_overwashed = around_overwashed if isinstance(around_overwashed, bool) else None
     selected_assistance = assistance if assistance in ("all", "unassisted", "assisted") else "all"
     board_filter = "WHERE level_key = ? AND player_count = ? AND metric = ?"
@@ -283,14 +294,16 @@ def leaderboard(
         board_parameters += (1 if selected_assistance == "assisted" else 0,)
     common = f"""
         WITH ranked AS (
-            SELECT *, ROW_NUMBER() OVER (ORDER BY {order}) AS rank_position
+            SELECT *,
+                RANK() OVER (ORDER BY {ranking}) AS rank_position,
+                ROW_NUMBER() OVER (ORDER BY {order}) AS row_position
             FROM personal_bests
             {board_filter}
         )
     """
     with connect() as connection:
         board_rows = connection.execute(
-            common + " SELECT * FROM ranked ORDER BY rank_position LIMIT ?",
+            common + " SELECT * FROM ranked ORDER BY row_position LIMIT ?",
             board_parameters + (limit,),
         ).fetchall()
         total_row = connection.execute(
@@ -302,7 +315,7 @@ def leaderboard(
         nearby_rows = []
         if player_id:
             self_rows = connection.execute(
-                common + " SELECT * FROM ranked WHERE player_id = ? ORDER BY rank_position",
+                common + " SELECT * FROM ranked WHERE player_id = ? ORDER BY row_position",
                 board_parameters + (player_id,),
             ).fetchall()
             if self_rows:
@@ -320,13 +333,13 @@ def leaderboard(
             if self_row is not None:
                 total_players = int(total_row["total"])
                 window_size = min(around, total_players)
-                first = max(1, int(self_row["rank_position"]) - window_size // 2)
+                first = max(1, int(self_row["row_position"]) - window_size // 2)
                 last = first + window_size - 1
                 if last > total_players:
                     last = total_players
                     first = max(1, last - window_size + 1)
                 nearby_rows = connection.execute(
-                    common + " SELECT * FROM ranked WHERE rank_position BETWEEN ? AND ? ORDER BY rank_position",
+                    common + " SELECT * FROM ranked WHERE row_position BETWEEN ? AND ? ORDER BY row_position",
                     board_parameters + (first, last),
                 ).fetchall()
         level_row = connection.execute(
@@ -337,6 +350,8 @@ def leaderboard(
             (level_key,),
         ).fetchone()
 
+    self_rank = 0 if self_row is None else int(self_row["rank_position"])
+    total_players = int(total_row["total"])
     return {
         "level_key": level_key,
         "level_name": "" if level_row is None else level_row["level_name"],
@@ -346,8 +361,9 @@ def leaderboard(
         "players": players,
         "metric": metric,
         "assistance": selected_assistance,
-        "total_players": int(total_row["total"]),
-        "self_rank": 0 if self_row is None else int(self_row["rank_position"]),
+        "total_players": total_players,
+        "self_rank": self_rank,
+        "self_percentile": rank_percentile(self_rank, total_players),
         "nearby_overwashed_used": False if self_row is None else bool(self_row["overwashed_used"]),
         "self_entries": [entry(row) for row in self_rows],
         "entries": [entry(row) for row in board_rows],

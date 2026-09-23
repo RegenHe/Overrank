@@ -109,7 +109,7 @@ class OverrankApiTests(unittest.TestCase):
                 round_id=round_id,
                 local_players=1,
                 in_level=True,
-                mod_version="1.0.0",
+                mod_version="1.1.0",
             )
         )
 
@@ -378,6 +378,38 @@ class OverrankApiTests(unittest.TestCase):
         self.assertEqual(leaderboard(first, 2, "score", "player-four-0004", 10, 3)["entries"][0]["score"], 400)
         self.assertEqual(leaderboard(second, 2, "score", "player-four-0004", 10, 3)["entries"][0]["score"], 900)
         self.assertGreaterEqual(len(played_levels("player-four-0004", 100)["levels"]), 2)
+
+    def test_equal_metric_values_share_rank_and_percentile(self):
+        board = "official-tied-ranking-values"
+        attempts = (
+            ("40000000-0000-0000-0000-000000000001", "tie-player-00001", "Alpha", 1000, 5),
+            ("40000000-0000-0000-0000-000000000002", "tie-player-00002", "Bravo", 1000, 4),
+            ("40000000-0000-0000-0000-000000000003", "tie-player-00003", "Charlie", 900, 5),
+            ("40000000-0000-0000-0000-000000000004", "tie-player-00004", "Delta", 800, 5),
+        )
+        for submission_id, player_id, name, score, dishes in attempts:
+            submit(self.payload(submission_id, player_id, board, score, dishes, name))
+
+        score_board = leaderboard(
+            board, 2, "score", "tie-player-00002", limit=100, around=3
+        )
+        self.assertEqual(
+            [(row["player_name"], row["rank"]) for row in score_board["entries"]],
+            [("Alpha", 1), ("Bravo", 1), ("Charlie", 3), ("Delta", 4)],
+        )
+        self.assertEqual(score_board["self_rank"], 1)
+        self.assertEqual(score_board["self_percentile"], 25)
+        self.assertEqual(len(score_board["nearby"]), 3)
+
+        dishes_board = leaderboard(
+            board, 2, "dishes", "tie-player-00003", limit=100, around=3
+        )
+        self.assertEqual(
+            [(row["player_name"], row["rank"]) for row in dishes_board["entries"]],
+            [("Alpha", 1), ("Charlie", 1), ("Delta", 1), ("Bravo", 4)],
+        )
+        self.assertEqual(dishes_board["self_rank"], 1)
+        self.assertEqual(dishes_board["self_percentile"], 25)
 
     def test_large_board_returns_one_hundred_top_and_nearby_entries(self):
         board = "official-eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee"

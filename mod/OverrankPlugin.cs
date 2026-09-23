@@ -761,10 +761,12 @@ namespace Overrank
                 || _leaderboard.self_rank <= 0
                 || _leaderboard.total_players <= 0
                 ? 0
-                : Mathf.Clamp(
-                    Mathf.CeilToInt(_leaderboard.self_rank * 100f / _leaderboard.total_players),
-                    1,
-                    100);
+                : (_leaderboard.self_percentile > 0
+                    ? Mathf.Clamp(_leaderboard.self_percentile, 1, 100)
+                    : Mathf.Clamp(
+                        Mathf.CeilToInt(_leaderboard.self_rank * 100f / _leaderboard.total_players),
+                        1,
+                        100));
             string nearbyTitle = OverrankText.Get("Around me", "我的附近");
             if (nearbyPercentile > 0)
             {
