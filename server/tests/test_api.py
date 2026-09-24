@@ -13,15 +13,33 @@ os.environ["OVERRANK_DATABASE"] = str(TEST_ROOT / "overrank-test.sqlite3")
 
 import overrank_server.app as app_module  # noqa: E402
 from overrank_server.app import (  # noqa: E402
+    create_room,
+    join_room,
     join_round,
     leaderboard,
+    leave_room,
+    list_rooms,
+    lobby_messages,
     played_levels,
+    post_lobby_message,
+    post_room_message,
     presence,
     report_assistance,
+    room_heartbeat,
     submit,
 )
 from overrank_server.database import connect, create_schema, initialise  # noqa: E402
-from overrank_server.schemas import Presence, RoundAssistance, RoundJoin, Submission  # noqa: E402
+from overrank_server.schemas import (  # noqa: E402
+    Presence,
+    RoomCreate,
+    RoomHeartbeat,
+    RoomJoin,
+    RoomLeave,
+    RoomMessage,
+    RoundAssistance,
+    RoundJoin,
+    Submission,
+)
 
 
 class OverrankApiTests(unittest.TestCase):
@@ -465,6 +483,265 @@ class OverrankApiTests(unittest.TestCase):
         self.assertEqual(len(response["nearby"]), 100)
         self.assertEqual(response["nearby"][0]["rank"], 50)
         self.assertEqual(response["nearby"][-1]["rank"], 149)
+
+    def test_ephemeral_room_join_heartbeat_chat_and_leave(self):
+        app_module._rooms.clear()
+        app_module._lobby_chat["messages"].clear()
+        app_module._lobby_chat["next_message_id"] = 1
+        app_module._lobby_message_times.clear()
+        created = create_room(
+            RoomCreate(
+                client_id="room-host-client-0001",
+                player_id="room-host-player-0001",
+                player_name="<b>Host</b>",
+                title="<color=red>Host kitchen</color>",
+                description="Tonight's games",
+                password="secret",
+                lobby_id="109775241234567890",
+                game_player_count=2,
+                game_player_limit=4,
+                status="lobby",
+            )
+        )
+        self.assertTrue(created["locked"])
+        self.assertEqual(created["title"], "Host kitchen")
+        self.assertEqual(created["game_player_count"], 2)
+        self.assertEqual(created["members"][0]["player_name"], "Host")
+        self.assertNotEqual(created["host_token"], "")
+        room_id = created["room_id"]
+
+        public = list_rooms("room-host-client-0001")["rooms"][0]
+        self.assertEqual(public["lobby_id"], "")
+        self.assertEqual(public["members"], [])
+        self.assertTrue(public["is_owner"])
+        with self.assertRaises(app_module.HTTPException) as own_room:
+            join_room(
+                room_id,
+                RoomJoin(
+                    client_id="room-host-client-0001",
+                    player_id="room-host-player-0001",
+                    player_name="Host",
+                    password="secret",
+                ),
+            )
+        self.assertEqual(own_room.exception.status_code, 409)
+        with self.assertRaises(app_module.HTTPException) as duplicate_room:
+            create_room(
+                RoomCreate(
+                    client_id="room-host-client-0001",
+                    player_id="room-host-player-0001",
+                    player_name="Host",
+                    title="Duplicate",
+                    lobby_id="109775241234567891",
+                    game_player_count=2,
+                )
+            )
+        self.assertEqual(duplicate_room.exception.status_code, 409)
+        with self.assertRaises(app_module.HTTPException) as wrong_password:
+            join_room(
+                room_id,
+                RoomJoin(
+                    client_id="room-guest-client-01",
+                    player_id="room-guest-player-01",
+                    player_name="Guest",
+                    password="wrong",
+                ),
+            )
+        self.assertEqual(wrong_password.exception.status_code, 403)
+
+        joined = join_room(
+            room_id,
+            RoomJoin(
+                client_id="room-guest-client-01",
+                player_id="room-guest-player-01",
+                player_name="Guest",
+                password="secret",
+            ),
+        )
+        self.assertEqual(joined["lobby_id"], "109775241234567890")
+        self.assertEqual(joined["member_count"], 2)
+
+        updated = room_heartbeat(
+            room_id,
+            RoomHeartbeat(
+                client_id="room-host-client-0001",
+                player_id="room-host-player-0001",
+                player_name="Host",
+                host_token=created["host_token"],
+                lobby_id="109775241234567890",
+                game_player_count=3,
+                game_player_limit=4,
+                status="playing",
+            ),
+        )
+        self.assertEqual(updated["game_player_count"], 3)
+        self.assertEqual(updated["status"], "playing")
+
+        transition_heartbeat = room_heartbeat(
+            room_id,
+            RoomHeartbeat(
+                client_id="room-host-client-0001",
+                player_id="room-host-player-0001",
+                player_name="Host",
+                host_token=created["host_token"],
+                lobby_id="",
+                game_player_count=3,
+                game_player_limit=4,
+                status="playing",
+            ),
+        )
+        self.assertEqual(transition_heartbeat["lobby_id"], "109775241234567890")
+        with self.assertRaises(app_module.HTTPException) as changed_lobby:
+            room_heartbeat(
+                room_id,
+                RoomHeartbeat(
+                    client_id="room-host-client-0001",
+                    player_id="room-host-player-0001",
+                    player_name="Host",
+                    host_token=created["host_token"],
+                    lobby_id="109775241234567899",
+                    game_player_count=3,
+                    game_player_limit=4,
+                    status="playing",
+                ),
+            )
+        self.assertEqual(changed_lobby.exception.status_code, 409)
+
+        chatted = post_room_message(
+            room_id,
+            RoomMessage(
+                client_id="room-guest-client-01",
+                player_id="room-guest-player-01",
+                player_name="Guest",
+                text="<size=20>Hello!</size>",
+            ),
+        )
+        self.assertEqual(chatted["messages"][0]["text"], "Hello!")
+        self.assertGreater(chatted["messages"][0]["sent_at"], 0)
+        for index in range(105):
+            chatted = post_room_message(
+                room_id,
+                RoomMessage(
+                    client_id="room-guest-client-01",
+                    player_id="room-guest-player-01",
+                    player_name="Guest",
+                    text=f"Room message {index}",
+                ),
+            )
+        self.assertEqual(len(chatted["messages"]), 100)
+        self.assertEqual(chatted["messages"][-1]["text"], "Room message 104")
+        lobby_chat = post_lobby_message(
+            RoomMessage(
+                client_id="room-guest-client-01",
+                player_id="room-guest-player-01",
+                player_name="Guest",
+                text="Hello lobby",
+            )
+        )
+        self.assertEqual(lobby_chat["messages"][0]["text"], "Hello lobby")
+        self.assertGreater(lobby_chat["messages"][0]["sent_at"], 0)
+        for index in range(9):
+            lobby_chat = post_lobby_message(
+                RoomMessage(
+                    client_id="room-guest-client-01",
+                    player_id="room-guest-player-01",
+                    player_name="Guest",
+                    text=f"Lobby message {index}",
+                )
+            )
+        self.assertEqual(len(lobby_chat["messages"]), 10)
+        with self.assertRaises(app_module.HTTPException) as rate_limited:
+            post_lobby_message(
+                RoomMessage(
+                    client_id="room-guest-client-01",
+                    player_id="room-guest-player-01",
+                    player_name="Guest",
+                    text="One too many",
+                )
+            )
+        self.assertEqual(rate_limited.exception.status_code, 429)
+        self.assertEqual(lobby_messages()["messages"][0]["player_name"], "Guest")
+        left = leave_room(
+            room_id,
+            RoomLeave(client_id="room-guest-client-01"),
+        )
+        self.assertFalse(left["room_closed"])
+        self.assertEqual(list_rooms()["rooms"][0]["member_count"], 1)
+
+        closed = leave_room(
+            room_id,
+            RoomLeave(
+                client_id="room-host-client-0001",
+                host_token=created["host_token"],
+            ),
+        )
+        self.assertTrue(closed["room_closed"])
+        self.assertEqual(list_rooms()["rooms"], [])
+
+    def test_room_list_prioritizes_lobbies_and_rejects_full_games(self):
+        app_module._rooms.clear()
+        playing = create_room(
+            RoomCreate(
+                client_id="playing-host-client-01",
+                player_id="playing-host-player-01",
+                player_name="Playing host",
+                title="Already playing",
+                lobby_id="109775241234567891",
+                game_player_count=2,
+                game_player_limit=4,
+                status="playing",
+            )
+        )
+        waiting = create_room(
+            RoomCreate(
+                client_id="waiting-host-client-01",
+                player_id="waiting-host-player-01",
+                player_name="Waiting host",
+                title="Waiting room",
+                lobby_id="109775241234567892",
+                game_player_count=1,
+                game_player_limit=4,
+                status="lobby",
+            )
+        )
+        full = create_room(
+            RoomCreate(
+                client_id="full-host-client-000001",
+                player_id="full-host-player-000001",
+                player_name="Full host",
+                title="Full room",
+                lobby_id="109775241234567893",
+                game_player_count=4,
+                game_player_limit=4,
+                status="lobby",
+            )
+        )
+
+        rooms = list_rooms()["rooms"]
+        self.assertEqual([room["status"] for room in rooms], ["lobby", "lobby", "playing"])
+        self.assertEqual(rooms[-1]["room_id"], playing["room_id"])
+        self.assertIn(waiting["room_id"], [room["room_id"] for room in rooms[:2]])
+        with self.assertRaises(app_module.HTTPException) as started_game:
+            join_room(
+                playing["room_id"],
+                RoomJoin(
+                    client_id="playing-guest-client-01",
+                    player_id="playing-guest-player-01",
+                    player_name="Guest",
+                ),
+            )
+        self.assertEqual(started_game.exception.status_code, 409)
+        with self.assertRaises(app_module.HTTPException) as full_room:
+            join_room(
+                full["room_id"],
+                RoomJoin(
+                    client_id="full-guest-client-0001",
+                    player_id="full-guest-player-0001",
+                    player_name="Guest",
+                ),
+            )
+        self.assertEqual(full_room.exception.status_code, 409)
+        app_module._rooms.clear()
 
     def test_schema_v2_personal_best_is_migrated_as_unassisted(self):
         connection = sqlite3.connect(":memory:")

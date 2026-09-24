@@ -18,6 +18,15 @@ def plain_player_name(value: object) -> str:
     return cleaned or "Unknown"
 
 
+def plain_text(value: object, fallback: str = "") -> str:
+    text = RICH_TEXT_TAG.sub("", "" if value is None else str(value))
+    cleaned = "".join(
+        character for character in text.strip()
+        if character >= " " and character != "\x7f"
+    )
+    return cleaned or fallback
+
+
 class Submission(BaseModel):
     submission_id: str = Field(min_length=32, max_length=64)
     player_id: str = Field(min_length=16, max_length=128)
@@ -127,6 +136,89 @@ class RoundAssistance(BaseModel):
     @classmethod
     def valid_assistance_nonce(cls, value: str) -> str:
         return str(UUID(value))
+
+
+class RoomCreate(BaseModel):
+    client_id: str = Field(min_length=16, max_length=128)
+    player_id: str = Field(min_length=16, max_length=128)
+    player_name: str = Field(min_length=1, max_length=64)
+    title: str = Field(min_length=1, max_length=48)
+    description: str = Field(default="", max_length=160)
+    password: str = Field(default="", max_length=32)
+    lobby_id: str = Field(min_length=16, max_length=20, pattern=r"^[0-9]+$")
+    game_player_count: int = Field(ge=1, le=4)
+    game_player_limit: int = Field(default=4, ge=1, le=4)
+    status: Literal["lobby", "playing"] = "lobby"
+
+    @field_validator("player_name", mode="before")
+    @classmethod
+    def clean_player_name(cls, value: object) -> str:
+        return plain_player_name(value)
+
+    @field_validator("title", mode="before")
+    @classmethod
+    def clean_title(cls, value: object) -> str:
+        return plain_text(value, "Room")
+
+    @field_validator("description", "password", mode="before")
+    @classmethod
+    def clean_optional_room_text(cls, value: object) -> str:
+        return plain_text(value)
+
+
+class RoomJoin(BaseModel):
+    client_id: str = Field(min_length=16, max_length=128)
+    player_id: str = Field(min_length=16, max_length=128)
+    player_name: str = Field(min_length=1, max_length=64)
+    password: str = Field(default="", max_length=32)
+
+    @field_validator("player_name", mode="before")
+    @classmethod
+    def clean_join_name(cls, value: object) -> str:
+        return plain_player_name(value)
+
+    @field_validator("password", mode="before")
+    @classmethod
+    def clean_join_password(cls, value: object) -> str:
+        return plain_text(value)
+
+
+class RoomHeartbeat(BaseModel):
+    client_id: str = Field(min_length=16, max_length=128)
+    player_id: str = Field(min_length=16, max_length=128)
+    player_name: str = Field(min_length=1, max_length=64)
+    host_token: str = Field(default="", max_length=64)
+    lobby_id: str = Field(default="", max_length=20, pattern=r"^[0-9]*$")
+    game_player_count: int = Field(default=1, ge=1, le=4)
+    game_player_limit: int = Field(default=4, ge=1, le=4)
+    status: Literal["lobby", "playing"] = "lobby"
+
+    @field_validator("player_name", mode="before")
+    @classmethod
+    def clean_heartbeat_name(cls, value: object) -> str:
+        return plain_player_name(value)
+
+
+class RoomMessage(BaseModel):
+    client_id: str = Field(min_length=16, max_length=128)
+    player_id: str = Field(min_length=16, max_length=128)
+    player_name: str = Field(min_length=1, max_length=64)
+    text: str = Field(min_length=1, max_length=240)
+
+    @field_validator("player_name", mode="before")
+    @classmethod
+    def clean_message_name(cls, value: object) -> str:
+        return plain_player_name(value)
+
+    @field_validator("text", mode="before")
+    @classmethod
+    def clean_message_text(cls, value: object) -> str:
+        return plain_text(value)
+
+
+class RoomLeave(BaseModel):
+    client_id: str = Field(min_length=16, max_length=128)
+    host_token: str = Field(default="", max_length=64)
 
 
 Metric = Literal["score", "dishes"]

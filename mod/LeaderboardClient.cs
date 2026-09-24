@@ -85,6 +85,77 @@ namespace Overrank
             _host.StartCoroutine(GetJson(url, callback));
         }
 
+        internal void RequestRooms(string clientId, Action<RoomListResponse, string> callback)
+        {
+            _host.StartCoroutine(GetJson(
+                BaseUrl + "/api/v1/rooms?client_id=" + UnityWebRequest.EscapeURL(clientId),
+                callback));
+        }
+
+        internal void RequestLobbyMessages(Action<LobbyChatResponse, string> callback)
+        {
+            _host.StartCoroutine(GetJson(BaseUrl + "/api/v1/chat/lobby/messages", callback));
+        }
+
+        internal void CreateRoom(RoomCreateRequest request, Action<RoomInfo, string> callback)
+        {
+            _host.StartCoroutine(PostJsonResponse(
+                BaseUrl + "/api/v1/rooms",
+                JsonUtility.ToJson(request),
+                callback));
+        }
+
+        internal void JoinRoom(string roomId, RoomJoinRequest request, Action<RoomInfo, string> callback)
+        {
+            _host.StartCoroutine(PostJsonResponse(
+                BaseUrl + "/api/v1/rooms/" + UnityWebRequest.EscapeURL(roomId) + "/join",
+                JsonUtility.ToJson(request),
+                callback));
+        }
+
+        internal void SendRoomHeartbeat(
+            string roomId,
+            RoomHeartbeatRequest request,
+            Action<RoomInfo, string> callback)
+        {
+            _host.StartCoroutine(PostJsonResponse(
+                BaseUrl + "/api/v1/rooms/" + UnityWebRequest.EscapeURL(roomId) + "/heartbeat",
+                JsonUtility.ToJson(request),
+                callback));
+        }
+
+        internal void SendRoomMessage(
+            string roomId,
+            RoomMessageRequest request,
+            Action<RoomInfo, string> callback)
+        {
+            _host.StartCoroutine(PostJsonResponse(
+                BaseUrl + "/api/v1/rooms/" + UnityWebRequest.EscapeURL(roomId) + "/messages",
+                JsonUtility.ToJson(request),
+                callback));
+        }
+
+        internal void SendLobbyMessage(
+            RoomMessageRequest request,
+            Action<LobbyChatResponse, string> callback)
+        {
+            _host.StartCoroutine(PostJsonResponse(
+                BaseUrl + "/api/v1/chat/lobby/messages",
+                JsonUtility.ToJson(request),
+                callback));
+        }
+
+        internal void LeaveRoom(
+            string roomId,
+            RoomLeaveRequest request,
+            Action<RoomLeaveResponse, string> callback)
+        {
+            _host.StartCoroutine(PostJsonResponse(
+                BaseUrl + "/api/v1/rooms/" + UnityWebRequest.EscapeURL(roomId) + "/leave",
+                JsonUtility.ToJson(request),
+                callback));
+        }
+
         internal bool SendPresence(PresenceHeartbeat heartbeat, Action<PresenceResponse, string> callback)
         {
             if (_presenceRunning || heartbeat == null)
@@ -293,6 +364,45 @@ namespace Overrank
             }
         }
 
+        private IEnumerator PostJsonResponse<T>(string url, string json, Action<T, string> callback)
+            where T : class
+        {
+            string responseBody = null;
+            string error = null;
+            yield return PostJson(
+                url,
+                json,
+                delegate(string response, string requestError)
+                {
+                    responseBody = response;
+                    error = requestError;
+                });
+            T parsed = null;
+            if (string.IsNullOrEmpty(error))
+            {
+                try
+                {
+                    parsed = JsonUtility.FromJson<T>(responseBody);
+                    PopulateNestedArrays(parsed, responseBody);
+                    if (parsed == null)
+                    {
+                        error = OverrankText.Get(
+                            "Server returned an empty JSON object",
+                            "服务器返回了空的 JSON 对象");
+                    }
+                }
+                catch (Exception exception)
+                {
+                    error = OverrankText.Get("Invalid server response: ", "服务器响应无效：")
+                        + exception.Message;
+                }
+            }
+            if (callback != null)
+            {
+                callback(parsed, error);
+            }
+        }
+
         private IEnumerator GetJson<T>(string url, Action<T, string> callback) where T : class
         {
             using (UnityWebRequest request = UnityWebRequest.Get(url))
@@ -342,6 +452,29 @@ namespace Overrank
             if (played != null)
             {
                 played.levels = ParseObjectArray<PlayedLevel>(json, "levels");
+                return;
+            }
+
+            RoomListResponse roomList = parsed as RoomListResponse;
+            if (roomList != null)
+            {
+                roomList.rooms = ParseObjectArray<RoomInfo>(json, "rooms");
+                roomList.messages = ParseObjectArray<RoomMessage>(json, "messages");
+                return;
+            }
+
+            LobbyChatResponse lobbyChat = parsed as LobbyChatResponse;
+            if (lobbyChat != null)
+            {
+                lobbyChat.messages = ParseObjectArray<RoomMessage>(json, "messages");
+                return;
+            }
+
+            RoomInfo room = parsed as RoomInfo;
+            if (room != null)
+            {
+                room.members = ParseObjectArray<RoomMember>(json, "members");
+                room.messages = ParseObjectArray<RoomMessage>(json, "messages");
             }
         }
 

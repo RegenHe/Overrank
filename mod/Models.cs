@@ -142,6 +142,116 @@ namespace Overrank
     {
         public PlayedLevel[] levels = new PlayedLevel[0];
     }
+
+    [Serializable]
+    public sealed class RoomCreateRequest
+    {
+        public string client_id;
+        public string player_id;
+        public string player_name;
+        public string title;
+        public string description;
+        public string password;
+        public string lobby_id;
+        public int game_player_count;
+        public int game_player_limit;
+        public string status;
+    }
+
+    [Serializable]
+    public sealed class RoomJoinRequest
+    {
+        public string client_id;
+        public string player_id;
+        public string player_name;
+        public string password;
+    }
+
+    [Serializable]
+    public sealed class RoomHeartbeatRequest
+    {
+        public string client_id;
+        public string player_id;
+        public string player_name;
+        public string host_token;
+        public string lobby_id;
+        public int game_player_count;
+        public int game_player_limit;
+        public string status;
+    }
+
+    [Serializable]
+    public sealed class RoomMessageRequest
+    {
+        public string client_id;
+        public string player_id;
+        public string player_name;
+        public string text;
+    }
+
+    [Serializable]
+    public sealed class RoomLeaveRequest
+    {
+        public string client_id;
+        public string host_token;
+    }
+
+    [Serializable]
+    public sealed class RoomMember
+    {
+        public string player_id;
+        public string player_name;
+        public bool is_host;
+    }
+
+    [Serializable]
+    public sealed class RoomMessage
+    {
+        public int message_id;
+        public string player_id;
+        public string player_name;
+        public string text;
+        public long sent_at;
+    }
+
+    [Serializable]
+    public sealed class RoomInfo
+    {
+        public string room_id;
+        public string title;
+        public string description;
+        public bool locked;
+        public int game_player_count;
+        public int game_player_limit;
+        public string status;
+        public string host_player_name;
+        public int member_count;
+        public RoomMember[] members = new RoomMember[0];
+        public RoomMessage[] messages = new RoomMessage[0];
+        public string lobby_id;
+        public string host_token;
+        public bool is_owner;
+    }
+
+    [Serializable]
+    public sealed class RoomListResponse
+    {
+        public RoomInfo[] rooms = new RoomInfo[0];
+        public RoomMessage[] messages = new RoomMessage[0];
+    }
+
+    [Serializable]
+    public sealed class LobbyChatResponse
+    {
+        public RoomMessage[] messages = new RoomMessage[0];
+    }
+
+    [Serializable]
+    public sealed class RoomLeaveResponse
+    {
+        public bool left;
+        public bool room_closed;
+    }
 }
 
 #pragma warning restore 0649
