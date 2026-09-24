@@ -379,6 +379,30 @@ class OverrankApiTests(unittest.TestCase):
         self.assertEqual(leaderboard(second, 2, "score", "player-four-0004", 10, 3)["entries"][0]["score"], 900)
         self.assertGreaterEqual(len(played_levels("player-four-0004", 100)["levels"]), 2)
 
+    def test_player_name_rich_text_is_ignored_for_new_and_existing_rows(self):
+        board = "official-rich-text-player-name"
+        player_id = "rich-name-player-001"
+        submit(
+            self.payload(
+                "50000000-0000-0000-0000-000000000001",
+                player_id,
+                board,
+                750,
+                7,
+                "<color=#666666><size=71>11</size></color> <3",
+            )
+        )
+        response = leaderboard(board, 2, "score", player_id, 100, 100)
+        self.assertEqual(response["entries"][0]["player_name"], "11 <3")
+
+        with connect() as connection:
+            connection.execute(
+                "UPDATE personal_bests SET player_name = ? WHERE player_id = ? AND level_key = ?",
+                ("<b><color=red>Legacy</color></b>", player_id, board),
+            )
+        existing = leaderboard(board, 2, "score", player_id, 100, 100)
+        self.assertEqual(existing["entries"][0]["player_name"], "Legacy")
+
     def test_equal_metric_values_share_rank_and_percentile(self):
         board = "official-tied-ranking-values"
         attempts = (

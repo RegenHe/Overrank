@@ -1,8 +1,21 @@
+import re
 from datetime import datetime, timezone
 from typing import Literal
 from uuid import UUID
 
 from pydantic import BaseModel, Field, field_validator
+
+
+RICH_TEXT_TAG = re.compile(r"</?[A-Za-z][^<>]*>")
+
+
+def plain_player_name(value: object) -> str:
+    text = RICH_TEXT_TAG.sub("", "" if value is None else str(value))
+    cleaned = "".join(
+        character for character in text.strip()
+        if character >= " " and character != "\x7f"
+    )
+    return cleaned or "Unknown"
 
 
 class Submission(BaseModel):
@@ -26,6 +39,11 @@ class Submission(BaseModel):
     lobby_key: str = Field(default="", max_length=128)
     attempt_nonce: str = Field(default="", max_length=64)
     round_id: str = Field(default="", max_length=64)
+
+    @field_validator("player_name", mode="before")
+    @classmethod
+    def remove_player_name_markup(cls, value: object) -> str:
+        return plain_player_name(value)
 
     @field_validator("submission_id")
     @classmethod

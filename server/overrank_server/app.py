@@ -8,7 +8,15 @@ from uuid import uuid4
 from fastapi import Depends, FastAPI, Header, HTTPException, Query
 
 from .database import connect, initialise, save_submission
-from .schemas import Assistance, Metric, Presence, RoundAssistance, RoundJoin, Submission
+from .schemas import (
+    Assistance,
+    Metric,
+    Presence,
+    RoundAssistance,
+    RoundJoin,
+    Submission,
+    plain_player_name,
+)
 
 
 PRESENCE_TTL_SECONDS = 150
@@ -175,7 +183,7 @@ def entry(row) -> dict:
     return {
         "rank": int(row["rank_position"]),
         "player_id": row["player_id"],
-        "player_name": row["player_name"],
+        "player_name": plain_player_name(row["player_name"]),
         "score": int(row["score"]),
         "dishes": int(row["dishes"]),
         "overwashed_used": bool(row["overwashed_used"]),
