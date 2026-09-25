@@ -1,6 +1,7 @@
 import hashlib
 import hmac
 import os
+import secrets
 import threading
 import time
 from contextlib import asynccontextmanager
@@ -27,9 +28,11 @@ from .schemas import (
 
 PRESENCE_TTL_SECONDS = 150
 ROUND_TTL_SECONDS = 20 * 60
-ROOM_TTL_SECONDS = 35
-ROOM_MEMBER_TTL_SECONDS = 35
+ROOM_TTL_SECONDS = 65
+ROOM_MEMBER_TTL_SECONDS = 65
 ROOM_MESSAGE_LIMIT = 100
+ROOM_LIST_LIMIT = 100
+LOBBY_MESSAGE_TTL_SECONDS = 4 * 60 * 60
 LOBBY_MESSAGE_RATE_LIMIT = 10
 LOBBY_MESSAGE_RATE_WINDOW_SECONDS = 60
 _presence_lock = threading.Lock()
@@ -40,6 +43,7 @@ _active_round_by_lobby: dict[str, str] = {}
 _attempt_rounds: dict[tuple[str, str], str] = {}
 _room_lock = threading.Lock()
 _rooms: dict[str, dict] = {}
+_room_catalog: dict[str, int] = {"revision": 1}
 _lobby_chat: dict[str, object] = {"next_message_id": 1, "messages": []}
 _lobby_message_times: dict[str, list[float]] = {}
 
@@ -96,6 +100,14 @@ def _password_hash(password: str) -> str:
     return hashlib.sha256(password.encode("utf-8")).hexdigest() if password else ""
 
 
+def _new_room_id() -> str:
+    for _ in range(32):
+        room_id = str(secrets.randbelow(900_000) + 100_000)
+        if room_id not in _rooms:
+            return room_id
+    raise HTTPException(status_code=503, detail="Could not allocate a room ID")
+
+
 def _purge_rooms(now: float) -> None:
     expired = [
         room_id
@@ -104,6 +116,7 @@ def _purge_rooms(now: float) -> None:
     ]
     for room_id in expired:
         _rooms.pop(room_id, None)
+    changed = bool(expired)
     for state in _rooms.values():
         stale = [
             client_id
@@ -113,6 +126,52 @@ def _purge_rooms(now: float) -> None:
         ]
         for client_id in stale:
             state["members"].pop(client_id, None)
+            changed = True
+    if changed:
+        _bump_room_revision()
+
+
+def _bump_room_revision() -> None:
+    _room_catalog["revision"] += 1
+
+
+def _purge_lobby_chat(now: float) -> None:
+    cutoff = now - LOBBY_MESSAGE_TTL_SECONDS
+    messages = _lobby_chat["messages"]
+    first_live = 0
+    while first_live < len(messages) and messages[first_live]["sent_at"] <= cutoff:
+        first_live += 1
+    if first_live:
+        del messages[:first_live]
+
+    stale_clients = []
+    rate_cutoff = now - LOBBY_MESSAGE_RATE_WINDOW_SECONDS
+    for client_id, sent_times in _lobby_message_times.items():
+        recent = [sent_at for sent_at in sent_times if sent_at > rate_cutoff]
+        if recent:
+            _lobby_message_times[client_id] = recent
+        else:
+            stale_clients.append(client_id)
+    for client_id in stale_clients:
+        _lobby_message_times.pop(client_id, None)
+
+
+def _lobby_chat_response(after_id: int, now: float) -> dict:
+    _purge_lobby_chat(now)
+    messages = list(_lobby_chat["messages"])
+    latest_id = messages[-1]["message_id"] if messages else 0
+    oldest_id = messages[0]["message_id"] if messages else 0
+    reset = after_id > latest_id
+    return {
+        "messages": [
+            message
+            for message in messages
+            if reset or message["message_id"] > after_id
+        ],
+        "latest_message_id": latest_id,
+        "oldest_message_id": oldest_id,
+        "reset": reset,
+    }
 
 
 def _room_member(payload: RoomCreate | RoomJoin | RoomHeartbeat, now: float) -> dict:
@@ -129,14 +188,9 @@ def _room_response(
     include_lobby: bool = False,
     include_details: bool = True,
     viewer_client_id: str = "",
+    messages_after_id: int | None = None,
 ) -> dict:
-    members = sorted(
-        state["members"].values(),
-        key=lambda member: (
-            member["client_id"] != state["host_client_id"],
-            member["joined_at"],
-        ),
-    )
+    members = list(state["members"].values())
     response = {
         "room_id": state["room_id"],
         "title": state["title"],
@@ -147,19 +201,34 @@ def _room_response(
         "status": state["status"],
         "host_player_name": state["host_player_name"],
         "member_count": len(members),
-        "members": [
-            {
-                "player_id": member["player_id"],
-                "player_name": member["player_name"],
-                "is_host": member["client_id"] == state["host_client_id"],
-            }
-            for member in members
-        ] if include_details else [],
-        "messages": list(state["messages"]) if include_details else [],
-        "lobby_id": state["lobby_id"] if include_lobby else "",
-        "host_token": "",
         "is_owner": bool(viewer_client_id) and viewer_client_id == state["host_client_id"],
     }
+    if include_details:
+        members.sort(
+            key=lambda member: (
+                member["client_id"] != state["host_client_id"],
+                member["joined_at"],
+            )
+        )
+        response.update(
+            {
+                "members": [
+                    {
+                        "player_id": member["player_id"],
+                        "player_name": member["player_name"],
+                        "is_host": member["client_id"] == state["host_client_id"],
+                    }
+                    for member in members
+                ],
+                "messages": [
+                    message
+                    for message in state["messages"]
+                    if messages_after_id is None or message["message_id"] > messages_after_id
+                ],
+                "lobby_id": state["lobby_id"] if include_lobby else "",
+                "host_token": "",
+            }
+        )
     return response
 
 
@@ -284,27 +353,43 @@ def health() -> dict:
 
 
 @app.get("/api/v1/rooms", dependencies=[Depends(require_api_key)])
-def list_rooms(client_id: str = Query(default="", max_length=128)) -> dict:
+def list_rooms(
+    client_id: str = Query(default="", max_length=128),
+    after_message_id: int = Query(default=0, ge=0),
+    room_revision: int = Query(default=0, ge=0),
+) -> dict:
     with _room_lock:
-        _purge_rooms(time.time())
-        rooms = sorted(
-            _rooms.values(),
-            key=lambda state: (
-                state["status"] == "playing",
-                -state["created_at"],
-                state["title"].casefold(),
-            ),
-        )
-        return {
+        now = time.time()
+        _purge_rooms(now)
+        viewer_client_id = client_id if isinstance(client_id, str) else ""
+        message_cursor = after_message_id if isinstance(after_message_id, int) else 0
+        known_revision = room_revision if isinstance(room_revision, int) else 0
+        current_revision = _room_catalog["revision"]
+        rooms_changed = known_revision != current_revision
+        rooms = []
+        if rooms_changed:
+            rooms = sorted(
+                _rooms.values(),
+                key=lambda state: (
+                    state["status"] == "playing",
+                    -state["created_at"],
+                    state["title"].casefold(),
+                ),
+            )[:ROOM_LIST_LIMIT]
+        response = {
             "rooms": [
                 _room_response(
                     state,
                     include_details=False,
-                    viewer_client_id=client_id,
+                    viewer_client_id=viewer_client_id,
                 )
                 for state in rooms
             ],
+            "room_revision": current_revision,
+            "rooms_changed": rooms_changed,
         }
+        response.update(_lobby_chat_response(message_cursor, now))
+        return response
 
 
 @app.post("/api/v1/rooms", dependencies=[Depends(require_api_key)])
@@ -315,7 +400,7 @@ def create_room(payload: RoomCreate) -> dict:
         if any(payload.client_id in state["members"] for state in _rooms.values()):
             raise HTTPException(status_code=409, detail="Leave the current room before creating another")
 
-        room_id = str(uuid4())
+        room_id = _new_room_id()
         host_token = uuid4().hex + uuid4().hex
         host = _room_member(payload, now)
         host["joined_at"] = now
@@ -338,6 +423,7 @@ def create_room(payload: RoomCreate) -> dict:
             "next_message_id": 1,
         }
         _rooms[room_id] = state
+        _bump_room_revision()
         response = _room_response(state, include_lobby=True)
         response["host_token"] = host_token
         return response
@@ -351,8 +437,10 @@ def join_room(room_id: str, payload: RoomJoin) -> dict:
         state = _rooms.get(room_id)
         if state is None:
             raise HTTPException(status_code=404, detail="Room not found")
-        if payload.client_id == state["host_client_id"]:
-            raise HTTPException(status_code=409, detail="You are already hosting this room")
+        host_member = state["members"].get(state["host_client_id"])
+        if (payload.client_id == state["host_client_id"]
+                or (host_member is not None and payload.player_id == host_member["player_id"])):
+            raise HTTPException(status_code=409, detail="You already own this room")
         if state["status"] == "playing":
             raise HTTPException(status_code=409, detail="The game has already started")
         if state["game_player_count"] >= state["game_player_limit"]:
@@ -368,23 +456,30 @@ def join_room(room_id: str, payload: RoomJoin) -> dict:
                 raise HTTPException(status_code=409, detail="Close your hosted room before joining another")
             other["members"].pop(payload.client_id, None)
         member = state["members"].get(payload.client_id)
+        is_new_member = member is None
         joined_at = now if member is None else member["joined_at"]
         member = _room_member(payload, now)
         member["joined_at"] = joined_at
         state["members"][payload.client_id] = member
+        if is_new_member:
+            _bump_room_revision()
         return _room_response(state, include_lobby=True)
 
 
 @app.get("/api/v1/chat/lobby/messages", dependencies=[Depends(require_api_key)])
-def lobby_messages() -> dict:
+def lobby_messages(after_id: int = Query(default=0, ge=0)) -> dict:
     with _room_lock:
-        return {"messages": list(_lobby_chat["messages"])}
+        # Direct unit-test calls receive FastAPI's Query object rather than a
+        # parsed integer; HTTP requests always provide an int.
+        cursor = after_id if isinstance(after_id, int) else 0
+        return _lobby_chat_response(cursor, time.time())
 
 
 @app.post("/api/v1/chat/lobby/messages", dependencies=[Depends(require_api_key)])
 def post_lobby_message(payload: RoomMessage) -> dict:
     with _room_lock:
         now = time.time()
+        _purge_lobby_chat(now)
         recent = [
             sent_at
             for sent_at in _lobby_message_times.get(payload.client_id, [])
@@ -406,7 +501,12 @@ def post_lobby_message(payload: RoomMessage) -> dict:
         messages.append(message)
         if len(messages) > ROOM_MESSAGE_LIMIT:
             del messages[:-ROOM_MESSAGE_LIMIT]
-        return {"messages": list(messages)}
+        return {
+            "messages": [message],
+            "latest_message_id": message["message_id"],
+            "oldest_message_id": messages[0]["message_id"],
+            "reset": False,
+        }
 
 
 @app.post("/api/v1/rooms/{room_id}/heartbeat", dependencies=[Depends(require_api_key)])
@@ -430,12 +530,30 @@ def room_heartbeat(room_id: str, payload: RoomHeartbeat) -> dict:
                 raise HTTPException(status_code=403, detail="Invalid room host token")
             if payload.lobby_id and payload.lobby_id != state["lobby_id"]:
                 raise HTTPException(status_code=409, detail="The hosted Steam lobby changed")
+            visible_before = (
+                state["host_player_name"],
+                state["game_player_limit"],
+                state["game_player_count"],
+                state["status"],
+            )
             state["host_seen_at"] = now
             state["host_player_name"] = payload.player_name
             state["game_player_limit"] = payload.game_player_limit
             state["game_player_count"] = min(payload.game_player_count, payload.game_player_limit)
             state["status"] = payload.status
-        return _room_response(state, include_lobby=True)
+            visible_after = (
+                state["host_player_name"],
+                state["game_player_limit"],
+                state["game_player_count"],
+                state["status"],
+            )
+            if visible_after != visible_before:
+                _bump_room_revision()
+        return _room_response(
+            state,
+            include_lobby=True,
+            messages_after_id=payload.last_message_id,
+        )
 
 
 @app.post("/api/v1/rooms/{room_id}/messages", dependencies=[Depends(require_api_key)])
@@ -462,7 +580,11 @@ def post_room_message(room_id: str, payload: RoomMessage) -> dict:
         state["messages"].append(message)
         if len(state["messages"]) > ROOM_MESSAGE_LIMIT:
             del state["messages"][:-ROOM_MESSAGE_LIMIT]
-        return _room_response(state, include_lobby=True)
+        return _room_response(
+            state,
+            include_lobby=True,
+            messages_after_id=message["message_id"] - 1,
+        )
 
 
 @app.post("/api/v1/rooms/{room_id}/leave", dependencies=[Depends(require_api_key)])
@@ -476,8 +598,10 @@ def leave_room(room_id: str, payload: RoomLeave) -> dict:
             if not payload.host_token or not hmac.compare_digest(state["host_token"], payload.host_token):
                 raise HTTPException(status_code=403, detail="Invalid room host token")
             _rooms.pop(room_id, None)
+            _bump_room_revision()
             return {"left": True, "room_closed": True}
-        state["members"].pop(payload.client_id, None)
+        if state["members"].pop(payload.client_id, None) is not None:
+            _bump_room_revision()
         return {"left": True, "room_closed": False}
 
 

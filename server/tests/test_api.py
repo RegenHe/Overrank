@@ -2,6 +2,7 @@ import os
 import shutil
 import sqlite3
 import sys
+import time
 import unittest
 from pathlib import Path
 
@@ -509,11 +510,22 @@ class OverrankApiTests(unittest.TestCase):
         self.assertEqual(created["members"][0]["player_name"], "Host")
         self.assertNotEqual(created["host_token"], "")
         room_id = created["room_id"]
+        self.assertEqual(len(room_id), 6)
+        self.assertTrue(room_id.isdigit())
 
-        public = list_rooms("room-host-client-0001")["rooms"][0]
-        self.assertEqual(public["lobby_id"], "")
-        self.assertEqual(public["members"], [])
+        initial_room_list = list_rooms("room-host-client-0001")
+        public = initial_room_list["rooms"][0]
+        self.assertNotIn("lobby_id", public)
+        self.assertNotIn("members", public)
+        self.assertNotIn("messages", public)
         self.assertTrue(public["is_owner"])
+        unchanged_room_list = list_rooms(
+            "room-host-client-0001",
+            0,
+            initial_room_list["room_revision"],
+        )
+        self.assertFalse(unchanged_room_list["rooms_changed"])
+        self.assertEqual(unchanged_room_list["rooms"], [])
         with self.assertRaises(app_module.HTTPException) as own_room:
             join_room(
                 room_id,
@@ -525,6 +537,17 @@ class OverrankApiTests(unittest.TestCase):
                 ),
             )
         self.assertEqual(own_room.exception.status_code, 409)
+        with self.assertRaises(app_module.HTTPException) as same_owner_identity:
+            join_room(
+                room_id,
+                RoomJoin(
+                    client_id="different-install-client-01",
+                    player_id="room-host-player-0001",
+                    player_name="Host",
+                    password="secret",
+                ),
+            )
+        self.assertEqual(same_owner_identity.exception.status_code, 409)
         with self.assertRaises(app_module.HTTPException) as duplicate_room:
             create_room(
                 RoomCreate(
@@ -560,6 +583,13 @@ class OverrankApiTests(unittest.TestCase):
         )
         self.assertEqual(joined["lobby_id"], "109775241234567890")
         self.assertEqual(joined["member_count"], 2)
+        changed_room_list = list_rooms(
+            "room-host-client-0001",
+            0,
+            initial_room_list["room_revision"],
+        )
+        self.assertTrue(changed_room_list["rooms_changed"])
+        self.assertEqual(changed_room_list["rooms"][0]["member_count"], 2)
 
         updated = room_heartbeat(
             room_id,
@@ -628,8 +658,29 @@ class OverrankApiTests(unittest.TestCase):
                     text=f"Room message {index}",
                 ),
             )
-        self.assertEqual(len(chatted["messages"]), 100)
-        self.assertEqual(chatted["messages"][-1]["text"], "Room message 104")
+        self.assertEqual(len(chatted["messages"]), 1)
+        self.assertEqual(chatted["messages"][0]["text"], "Room message 104")
+        room_history = room_heartbeat(
+            room_id,
+            RoomHeartbeat(
+                client_id="room-guest-client-01",
+                player_id="room-guest-player-01",
+                player_name="Guest",
+                last_message_id=0,
+            ),
+        )
+        self.assertEqual(len(room_history["messages"]), 100)
+        self.assertEqual(room_history["messages"][-1]["text"], "Room message 104")
+        room_delta = room_heartbeat(
+            room_id,
+            RoomHeartbeat(
+                client_id="room-guest-client-01",
+                player_id="room-guest-player-01",
+                player_name="Guest",
+                last_message_id=room_history["messages"][-1]["message_id"],
+            ),
+        )
+        self.assertEqual(room_delta["messages"], [])
         lobby_chat = post_lobby_message(
             RoomMessage(
                 client_id="room-guest-client-01",
@@ -649,7 +700,8 @@ class OverrankApiTests(unittest.TestCase):
                     text=f"Lobby message {index}",
                 )
             )
-        self.assertEqual(len(lobby_chat["messages"]), 10)
+        self.assertEqual(len(lobby_chat["messages"]), 1)
+        self.assertEqual(lobby_chat["messages"][0]["text"], "Lobby message 8")
         with self.assertRaises(app_module.HTTPException) as rate_limited:
             post_lobby_message(
                 RoomMessage(
@@ -660,7 +712,28 @@ class OverrankApiTests(unittest.TestCase):
                 )
             )
         self.assertEqual(rate_limited.exception.status_code, 429)
-        self.assertEqual(lobby_messages()["messages"][0]["player_name"], "Guest")
+        lobby_history = lobby_messages(0)
+        self.assertEqual(len(lobby_history["messages"]), 10)
+        self.assertEqual(lobby_history["messages"][0]["player_name"], "Guest")
+        lobby_delta = lobby_messages(lobby_history["latest_message_id"] - 1)
+        self.assertEqual(len(lobby_delta["messages"]), 1)
+        self.assertFalse(lobby_delta["reset"])
+        combined_lobby = list_rooms(
+            "room-guest-client-01",
+            lobby_history["latest_message_id"] - 1,
+        )
+        self.assertEqual(len(combined_lobby["messages"]), 1)
+        self.assertEqual(
+            combined_lobby["latest_message_id"],
+            lobby_history["latest_message_id"],
+        )
+        restarted_cursor = lobby_messages(lobby_history["latest_message_id"] + 100)
+        self.assertTrue(restarted_cursor["reset"])
+        self.assertEqual(len(restarted_cursor["messages"]), 10)
+
+        app_module._lobby_chat["messages"][0]["sent_at"] = int(time.time()) - (4 * 60 * 60) - 1
+        retained = lobby_messages(0)
+        self.assertEqual(len(retained["messages"]), 9)
         left = leave_room(
             room_id,
             RoomLeave(client_id="room-guest-client-01"),

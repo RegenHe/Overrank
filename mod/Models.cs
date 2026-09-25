@@ -178,6 +178,7 @@ namespace Overrank
         public int game_player_count;
         public int game_player_limit;
         public string status;
+        public int last_message_id;
     }
 
     [Serializable]
@@ -238,12 +239,20 @@ namespace Overrank
     {
         public RoomInfo[] rooms = new RoomInfo[0];
         public RoomMessage[] messages = new RoomMessage[0];
+        public int latest_message_id;
+        public int oldest_message_id;
+        public bool reset;
+        public int room_revision;
+        public bool rooms_changed;
     }
 
     [Serializable]
     public sealed class LobbyChatResponse
     {
         public RoomMessage[] messages = new RoomMessage[0];
+        public int latest_message_id;
+        public int oldest_message_id;
+        public bool reset;
     }
 
     [Serializable]

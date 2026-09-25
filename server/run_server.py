@@ -26,4 +26,8 @@ if __name__ == "__main__":
         host=os.environ.get("OVERRANK_HOST", "127.0.0.1"),
         port=int(os.environ.get("OVERRANK_PORT", "3005")),
         reload=False,
+        access_log=False,
+        server_header=False,
+        date_header=False,
+        timeout_keep_alive=25,
     )

@@ -85,16 +85,24 @@ namespace Overrank
             _host.StartCoroutine(GetJson(url, callback));
         }
 
-        internal void RequestRooms(string clientId, Action<RoomListResponse, string> callback)
+        internal void RequestRooms(
+            string clientId,
+            int afterMessageId,
+            int roomRevision,
+            Action<RoomListResponse, string> callback)
         {
             _host.StartCoroutine(GetJson(
-                BaseUrl + "/api/v1/rooms?client_id=" + UnityWebRequest.EscapeURL(clientId),
+                BaseUrl + "/api/v1/rooms?client_id=" + UnityWebRequest.EscapeURL(clientId)
+                    + "&after_message_id=" + Math.Max(0, afterMessageId)
+                    + "&room_revision=" + Math.Max(0, roomRevision),
                 callback));
         }
 
-        internal void RequestLobbyMessages(Action<LobbyChatResponse, string> callback)
+        internal void RequestLobbyMessages(int afterId, Action<LobbyChatResponse, string> callback)
         {
-            _host.StartCoroutine(GetJson(BaseUrl + "/api/v1/chat/lobby/messages", callback));
+            _host.StartCoroutine(GetJson(
+                BaseUrl + "/api/v1/chat/lobby/messages?after_id=" + Math.Max(0, afterId),
+                callback));
         }
 
         internal void CreateRoom(RoomCreateRequest request, Action<RoomInfo, string> callback)
@@ -486,14 +494,7 @@ namespace Overrank
                 return items.ToArray();
             }
 
-            string marker = "\"" + fieldName + "\"";
-            int markerIndex = json.IndexOf(marker, StringComparison.Ordinal);
-            if (markerIndex < 0)
-            {
-                return items.ToArray();
-            }
-
-            int arrayStart = json.IndexOf('[', markerIndex + marker.Length);
+            int arrayStart = FindTopLevelArrayStart(json, fieldName);
             if (arrayStart < 0)
             {
                 return items.ToArray();
@@ -559,6 +560,82 @@ namespace Overrank
                 }
             }
             return items.ToArray();
+        }
+
+        private static int FindTopLevelArrayStart(string json, string fieldName)
+        {
+            bool insideString = false;
+            bool escaped = false;
+            int stringStart = -1;
+            int objectDepth = 0;
+            int arrayDepth = 0;
+            for (int index = 0; index < json.Length; index++)
+            {
+                char current = json[index];
+                if (insideString)
+                {
+                    if (escaped)
+                    {
+                        escaped = false;
+                    }
+                    else if (current == '\\')
+                    {
+                        escaped = true;
+                    }
+                    else if (current == '"')
+                    {
+                        insideString = false;
+                        int length = index - stringStart;
+                        if (objectDepth == 1
+                            && arrayDepth == 0
+                            && length == fieldName.Length
+                            && string.CompareOrdinal(json, stringStart, fieldName, 0, length) == 0)
+                        {
+                            int separator = index + 1;
+                            while (separator < json.Length && char.IsWhiteSpace(json[separator]))
+                            {
+                                separator++;
+                            }
+                            if (separator < json.Length && json[separator] == ':')
+                            {
+                                separator++;
+                                while (separator < json.Length && char.IsWhiteSpace(json[separator]))
+                                {
+                                    separator++;
+                                }
+                                if (separator < json.Length && json[separator] == '[')
+                                {
+                                    return separator;
+                                }
+                            }
+                        }
+                    }
+                    continue;
+                }
+
+                if (current == '"')
+                {
+                    insideString = true;
+                    stringStart = index + 1;
+                }
+                else if (current == '{')
+                {
+                    objectDepth++;
+                }
+                else if (current == '}')
+                {
+                    objectDepth--;
+                }
+                else if (current == '[')
+                {
+                    arrayDepth++;
+                }
+                else if (current == ']')
+                {
+                    arrayDepth--;
+                }
+            }
+            return -1;
         }
 
         private void AddHeaders(UnityWebRequest request)

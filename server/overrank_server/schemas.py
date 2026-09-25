@@ -192,6 +192,7 @@ class RoomHeartbeat(BaseModel):
     game_player_count: int = Field(default=1, ge=1, le=4)
     game_player_limit: int = Field(default=4, ge=1, le=4)
     status: Literal["lobby", "playing"] = "lobby"
+    last_message_id: int = Field(default=0, ge=0)
 
     @field_validator("player_name", mode="before")
     @classmethod
