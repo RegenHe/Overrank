@@ -198,8 +198,17 @@ namespace Overrank
     }
 
     [Serializable]
+    public sealed class RoomKickRequest
+    {
+        public string client_id;
+        public string host_token;
+        public string target_client_id;
+    }
+
+    [Serializable]
     public sealed class RoomMember
     {
+        public string client_id;
         public string player_id;
         public string player_name;
         public bool is_host;

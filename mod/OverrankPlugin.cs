@@ -44,6 +44,8 @@ namespace Overrank
         private string _requestError;
         private string _responseSummary;
         private string _presenceSummary;
+        private string _lastPresenceError;
+        private bool _roomMessageUnread;
         private string _clientId;
         private string _playerId;
         private string _playerName = "Player";
@@ -84,7 +86,10 @@ namespace Overrank
         private float _roomLobbyMissingSince = -1f;
         private string _lastObservedRoomStatus;
         private float _nextRoomStatusCheck;
+        private float _nextRoomMembershipCheck;
         private bool _roomRequestRunning;
+        private bool _roomRefreshRunning;
+        private bool _roomHeartbeatRunning;
         private bool _creatingGameLobby;
         private float _gameLobbyCreateDeadline;
         private float _nextGameLobbyCheck;
@@ -108,6 +113,9 @@ namespace Overrank
         private int _lastLobbyMessageId;
         private int _roomListRevision;
         private float _nextRoomRefresh;
+        private float _nextManualRoomRefresh;
+        private float _nextAllowedRoomListRequest;
+        private float _nextManualLeaderboardRefresh;
         private Vector2 _roomListScroll;
         private Vector2 _roomMemberScroll;
         private Vector2 _roomChatScroll;
@@ -180,6 +188,7 @@ namespace Overrank
             }
             UpdatePendingGameLobbyCreation();
             UpdatePendingSteamLobbyJoin();
+            UpdateGameLobbyMembership();
             UpdateRoomStatusTransition();
             UpdateRoomState();
         }
@@ -499,6 +508,7 @@ namespace Overrank
                 {
                     if (response != null && string.IsNullOrEmpty(error))
                     {
+                        _lastPresenceError = null;
                         _presenceSummary = OverrankText.IsSimplifiedChinese
                             ? "在线 " + response.online_players + " · 游玩中 " + response.playing_players
                             : "Online " + response.online_players + " · Playing " + response.playing_players;
@@ -516,6 +526,19 @@ namespace Overrank
                             {
                                 _roundAssistanceKnown = true;
                             }
+                        }
+                    }
+                    else if (!string.IsNullOrEmpty(error))
+                    {
+                        _presenceSummary = OverrankText.Get(
+                            "Online status unavailable",
+                            "在线状态暂不可用");
+                        _lastPresenceFingerprint = string.Empty;
+                        _nextPresenceHeartbeat = Time.unscaledTime + 5f;
+                        if (!string.Equals(_lastPresenceError, error, StringComparison.Ordinal))
+                        {
+                            _lastPresenceError = error;
+                            _log.LogWarning("Overrank presence heartbeat failed: " + error);
                         }
                     }
                 });
@@ -624,8 +647,14 @@ namespace Overrank
 
             float left = Screen.width - 82f;
             Rect iconRect = new Rect(left, 12f, 32f, 32f);
+            if (_roomMessageUnread
+                && (Mathf.FloorToInt(Time.unscaledTime * 2f) & 1) == 0)
+            {
+                GUI.color = new Color(1f, 0.58f, 0.18f, 1f);
+            }
             GUI.DrawTexture(iconRect, _iconBackground, ScaleMode.StretchToFill, true);
             GUI.DrawTexture(new Rect(left + 5f, 17f, 22f, 22f), _icon, ScaleMode.ScaleToFit, true);
+            GUI.color = Color.white;
             Event current = Event.current;
             if (current != null
                 && current.type == EventType.MouseDown
@@ -635,6 +664,7 @@ namespace Overrank
                 _showPanel = !_showPanel;
                 if (_showPanel)
                 {
+                    _nextRoomRefresh = 0f;
                     OpenLeaderboard();
                 }
                 current.Use();
@@ -761,6 +791,7 @@ namespace Overrank
             {
                 _showLevels = false;
                 _roomPage = 1;
+                _roomMessageUnread = false;
                 _nextRoomRefresh = 0f;
             }
             if (GUI.Button(
@@ -837,13 +868,19 @@ namespace Overrank
                 ? OverrankText.Get("No played level yet", "尚无玩过的关卡")
                 : _selectedLevelName;
             GUI.Label(new Rect(panel.x + 14f, panel.y + 68f, panel.width - 150f, 24f), title);
+            bool leaderboardControlsEnabled = GUI.enabled;
+            GUI.enabled = leaderboardControlsEnabled && CanManuallyRefreshLeaderboard();
             if (GUI.Button(
                 new Rect(panel.x + panel.width - 94f, panel.y + 66f, 80f, 24f),
                 OverrankText.Get("Refresh", "刷新")))
             {
-                ClearLeaderboardCache();
-                RefreshBoard();
+                if (BeginManualLeaderboardRefresh())
+                {
+                    ClearLeaderboardCache();
+                    RefreshBoard();
+                }
             }
+            GUI.enabled = leaderboardControlsEnabled;
 
             GUI.Label(
                 new Rect(panel.x + 14f, panel.y + 98f, 52f, 22f),
@@ -851,7 +888,9 @@ namespace Overrank
             if (GUI.Toggle(
                 new Rect(panel.x + 70f, panel.y + 98f, 70f, 22f),
                 _metric == "score",
-                OverrankText.Get("Score", "分数")) && _metric != "score")
+                OverrankText.Get("Score", "分数"))
+                && _metric != "score"
+                && BeginManualLeaderboardRefresh())
             {
                 _metric = "score";
                 _nearbyMode = 0;
@@ -860,7 +899,9 @@ namespace Overrank
             if (GUI.Toggle(
                 new Rect(panel.x + 144f, panel.y + 98f, 78f, 22f),
                 _metric == "dishes",
-                OverrankText.Get("Dishes", "菜数")) && _metric != "dishes")
+                OverrankText.Get("Dishes", "菜数"))
+                && _metric != "dishes"
+                && BeginManualLeaderboardRefresh())
             {
                 _metric = "dishes";
                 _nearbyMode = 0;
@@ -876,7 +917,8 @@ namespace Overrank
                     new Rect(panel.x + 308f + (count - 1) * 48f, panel.y + 98f, 45f, 22f),
                     _players == count,
                     count.ToString())
-                    && _players != count)
+                    && _players != count
+                    && BeginManualLeaderboardRefresh())
                 {
                     _players = count;
                     _lastPlayerCount.Value = count;
@@ -990,12 +1032,15 @@ namespace Overrank
             {
                 selectedRank = _leaderboard.self_rank;
             }
-            bool canSwitch = !_requestRunning && HasAnyPersonalRank();
+            bool canSwitch = CanManuallyRefreshLeaderboard() && HasAnyPersonalRank();
             bool previousEnabled = GUI.enabled;
             GUI.enabled = previousEnabled && canSwitch;
             if (GUI.Button(area, label + " " + (selectedRank <= 0 ? "--" : "#" + selectedRank)))
             {
-                SwitchNearbyMode();
+                if (BeginManualLeaderboardRefresh())
+                {
+                    SwitchNearbyMode();
+                }
             }
             GUI.enabled = previousEnabled;
         }
@@ -1197,12 +1242,16 @@ namespace Overrank
                 EnterRoomById();
             }
             GUI.enabled = lobbyControlsEnabled;
+            GUI.enabled = lobbyControlsEnabled
+                && !_roomRefreshRunning
+                && Time.unscaledTime >= _nextManualRoomRefresh;
             if (GUI.Button(
                 new Rect(roomsX + roomsWidth - 80f, panel.y + 66f, 80f, 24f),
                 OverrankText.Get("Refresh", "刷新")))
             {
-                RefreshRooms();
+                RefreshRooms(true);
             }
+            GUI.enabled = lobbyControlsEnabled;
             GUI.Label(
                 new Rect(roomsX + 208f, panel.y + 68f, 70f, 24f),
                 OverrankText.Get("Password", "密码"));
@@ -1300,8 +1349,8 @@ namespace Overrank
                     bool copyEnabled = GUI.enabled;
                     GUI.enabled = copyEnabled && !string.IsNullOrEmpty(room.room_id);
                     if (GUI.Button(
-                        new Rect(content.width - 60f, y + 34f, 54f, 21f),
-                        OverrankText.Get("Copy", "复制")))
+                        new Rect(content.width - 92f, y + 34f, 86f, 21f),
+                        OverrankText.Get("Copy ID", "复制房间号")))
                     {
                         GUIUtility.systemCopyBuffer = room.room_id;
                         _directRoomId = room.room_id;
@@ -1390,6 +1439,7 @@ namespace Overrank
         private void DrawCurrentRoom(Rect panel)
         {
             bool enterPressed = IsEnterPressed();
+            _roomMessageUnread = false;
             if (_currentRoom == null || string.IsNullOrEmpty(_currentRoomId))
             {
                 GUI.Label(
@@ -1441,8 +1491,26 @@ namespace Overrank
                     ? OverrankText.Get(" (Host)", "（房主）")
                     : string.Empty;
                 GUI.Label(
-                    new Rect(0f, index * 25f, memberContent.width, 23f),
+                    new Rect(
+                        0f,
+                        index * 25f,
+                        memberContent.width - (_isRoomHost && !member.is_host ? 58f : 0f),
+                        23f),
                     Truncate(member.player_name, 22) + suffix);
+                if (_isRoomHost && !member.is_host)
+                {
+                    bool kickEnabled = GUI.enabled;
+                    GUI.enabled = kickEnabled
+                        && !_roomRequestRunning
+                        && !string.IsNullOrEmpty(member.client_id);
+                    if (GUI.Button(
+                        new Rect(memberContent.width - 54f, index * 25f, 52f, 22f),
+                        OverrankText.Get("Kick", "踢出")))
+                    {
+                        KickRoomMember(member);
+                    }
+                    GUI.enabled = kickEnabled;
+                }
             }
             GUI.EndScrollView();
 
@@ -1666,19 +1734,27 @@ namespace Overrank
 
         private void UpdateRoomState()
         {
-            if (_client == null || _roomRequestRunning || Time.unscaledTime < _nextRoomRefresh)
+            if (_client == null || Time.unscaledTime < _nextRoomRefresh)
             {
                 return;
             }
             if (!string.IsNullOrEmpty(_currentRoomId))
             {
+                if (_roomRequestRunning || _roomHeartbeatRunning)
+                {
+                    return;
+                }
                 SendRoomHeartbeat();
-                _nextRoomRefresh = Time.unscaledTime + (_showPanel && _roomPage == 1 ? 4f : 20f);
+                _nextRoomRefresh = Time.unscaledTime + (_showPanel && _roomPage == 1 ? 3f : 10f);
             }
             else if (_showPanel && _roomPage == 2)
             {
+                if (_roomRequestRunning || _roomRefreshRunning)
+                {
+                    return;
+                }
                 RefreshRooms();
-                _nextRoomRefresh = Time.unscaledTime + 5f;
+                _nextRoomRefresh = Time.unscaledTime + 4f;
             }
         }
 
@@ -1700,13 +1776,78 @@ namespace Overrank
             _nextRoomRefresh = 0f;
         }
 
-        private void RefreshRooms()
+        private void UpdateGameLobbyMembership()
         {
-            if (_client == null || _roomRequestRunning)
+            if (string.IsNullOrEmpty(_currentRoomId)
+                || _roomRequestRunning
+                || Time.unscaledTime < _nextRoomMembershipCheck)
             {
                 return;
             }
-            _roomRequestRunning = true;
+            _nextRoomMembershipCheck = Time.unscaledTime + 1f;
+            ulong expectedLobbyId = 0UL;
+            if (_currentRoom != null)
+            {
+                ulong.TryParse(_currentRoom.lobby_id, out expectedLobbyId);
+            }
+            ulong observedLobbyId;
+            string ignoredLobbyKey;
+            int ignoredMemberCount;
+            bool hasLobby = SessionContext.TryReadLobby(
+                out observedLobbyId,
+                out ignoredLobbyKey,
+                out ignoredMemberCount);
+            if (hasLobby)
+            {
+                _roomLobbyMissingSince = -1f;
+                if (expectedLobbyId != 0UL && observedLobbyId != expectedLobbyId)
+                {
+                    _roomError = OverrankText.Get(
+                        "Left the Overrank room after switching Steam game lobbies.",
+                        "Steam 游戏战局已切换，已离开 Overrank 房间");
+                    LeaveCurrentRoom(false);
+                }
+                return;
+            }
+            if (_roomLobbyMissingSince < 0f)
+            {
+                _roomLobbyMissingSince = Time.unscaledTime;
+                return;
+            }
+            if (Time.unscaledTime - _roomLobbyMissingSince >= 5f)
+            {
+                _roomError = OverrankText.Get(
+                    "Left the Overrank room after disconnecting from the Steam game lobby.",
+                    "与 Steam 游戏战局断开，已离开 Overrank 房间");
+                LeaveCurrentRoom(false);
+            }
+        }
+
+        private void RefreshRooms()
+        {
+            RefreshRooms(false);
+        }
+
+        private void RefreshRooms(bool manual)
+        {
+            if (_client == null || _roomRequestRunning || _roomRefreshRunning)
+            {
+                return;
+            }
+            if (Time.unscaledTime < _nextAllowedRoomListRequest)
+            {
+                return;
+            }
+            if (manual && Time.unscaledTime < _nextManualRoomRefresh)
+            {
+                return;
+            }
+            _nextAllowedRoomListRequest = Time.unscaledTime + 1f;
+            if (manual)
+            {
+                _nextManualRoomRefresh = Time.unscaledTime + 1f;
+            }
+            _roomRefreshRunning = true;
             _roomError = null;
             _client.RequestRooms(
                 _clientId,
@@ -1714,7 +1855,7 @@ namespace Overrank
                 _roomListRevision,
                 delegate(RoomListResponse response, string error)
                 {
-                    _roomRequestRunning = false;
+                    _roomRefreshRunning = false;
                     if (!string.IsNullOrEmpty(error) || response == null)
                     {
                         _roomError = RoomErrorLabel(error);
@@ -1722,20 +1863,20 @@ namespace Overrank
                         return;
                     }
                     ApplyRoomList(response);
-                    _nextRoomRefresh = Time.unscaledTime + 5f;
+                    _nextRoomRefresh = Time.unscaledTime + 4f;
                 });
         }
 
         private void RefreshLobbyMessages()
         {
-            if (_client == null || _roomRequestRunning)
+            if (_client == null || _roomRequestRunning || _roomRefreshRunning)
             {
                 return;
             }
-            _roomRequestRunning = true;
+            _roomRefreshRunning = true;
             _client.RequestLobbyMessages(_lastLobbyMessageId, delegate(LobbyChatResponse response, string error)
             {
-                _roomRequestRunning = false;
+                _roomRefreshRunning = false;
                 if (!string.IsNullOrEmpty(error) || response == null)
                 {
                     _roomError = LobbyChatErrorLabel(error);
@@ -1776,6 +1917,17 @@ namespace Overrank
                     _roomRequestRunning = false;
                     if (!string.IsNullOrEmpty(error) || room == null)
                     {
+                        if (!string.IsNullOrEmpty(error))
+                        {
+                            _log.LogWarning(
+                                "Overrank room creation failed: " + error
+                                + " [lobbyId=" + lobbyId
+                                + ", playerNameLength=" + ((_playerName ?? string.Empty).Length)
+                                + ", titleLength=" + ((_createRoomTitle ?? string.Empty).Trim().Length)
+                                + ", descriptionLength=" + ((_createRoomDescription ?? string.Empty).Trim().Length)
+                                + ", playerCount=" + CurrentGamePlayerCount()
+                                + ", status=" + CurrentRoomStatus() + "]");
+                        }
                         _roomError = RoomErrorLabel(error);
                         return;
                     }
@@ -1941,12 +2093,14 @@ namespace Overrank
         {
             if (_client == null
                 || _pendingJoinedRoom == null
+                || _roomHeartbeatRunning
                 || Time.unscaledTime < _nextPendingJoinHeartbeat)
             {
                 return;
             }
             _nextPendingJoinHeartbeat = Time.unscaledTime + 20f;
             string roomId = _pendingJoinedRoom.room_id;
+            _roomHeartbeatRunning = true;
             _client.SendRoomHeartbeat(
                 roomId,
                 new RoomHeartbeatRequest
@@ -1963,6 +2117,7 @@ namespace Overrank
                 },
                 delegate(RoomInfo room, string error)
                 {
+                    _roomHeartbeatRunning = false;
                     if (_pendingJoinedRoom == null
                         || !string.Equals(roomId, _pendingJoinedRoom.room_id, StringComparison.Ordinal))
                     {
@@ -1992,11 +2147,15 @@ namespace Overrank
             _steamLobbyJoinDeadline = 0f;
             _nextSteamLobbyJoinCheck = 0f;
             _nextPendingJoinHeartbeat = 0f;
+            _roomHeartbeatRunning = false;
         }
 
         private void SendRoomHeartbeat()
         {
-            if (_client == null || _roomRequestRunning || string.IsNullOrEmpty(_currentRoomId))
+            if (_client == null
+                || _roomRequestRunning
+                || _roomHeartbeatRunning
+                || string.IsNullOrEmpty(_currentRoomId))
             {
                 return;
             }
@@ -2017,7 +2176,7 @@ namespace Overrank
                 _roomError = OverrankText.Get(
                     "Left the Overrank room after switching Steam game lobbies.",
                     "Steam 游戏战局已切换，已离开 Overrank 房间");
-                LeaveCurrentRoom();
+                LeaveCurrentRoom(false);
                 return;
             }
             if (hasLobby)
@@ -2030,17 +2189,17 @@ namespace Overrank
                 {
                     _roomLobbyMissingSince = Time.unscaledTime;
                 }
-                else if (Time.unscaledTime - _roomLobbyMissingSince >= 20f)
+                else if (Time.unscaledTime - _roomLobbyMissingSince >= 5f)
                 {
                     _roomError = OverrankText.Get(
                         "Left the Overrank room after disconnecting from the Steam game lobby.",
                         "与 Steam 游戏战局断开，已离开 Overrank 房间");
-                    LeaveCurrentRoom();
+                    LeaveCurrentRoom(false);
                     return;
                 }
             }
             string roomId = _currentRoomId;
-            _roomRequestRunning = true;
+            _roomHeartbeatRunning = true;
             _client.SendRoomHeartbeat(
                 roomId,
                 new RoomHeartbeatRequest
@@ -2059,7 +2218,7 @@ namespace Overrank
                 },
                 delegate(RoomInfo room, string error)
                 {
-                    _roomRequestRunning = false;
+                    _roomHeartbeatRunning = false;
                     if (!string.Equals(roomId, _currentRoomId, StringComparison.Ordinal))
                     {
                         return;
@@ -2068,9 +2227,11 @@ namespace Overrank
                     {
                         _roomError = RoomErrorLabel(error);
                         if (!string.IsNullOrEmpty(error)
-                            && (error.IndexOf("HTTP 404", StringComparison.Ordinal) >= 0
+                            && (error.IndexOf("HTTP 403", StringComparison.Ordinal) >= 0
+                                || error.IndexOf("HTTP 404", StringComparison.Ordinal) >= 0
                                 || error.IndexOf("HTTP 409", StringComparison.Ordinal) >= 0))
                         {
+                            RequestLeaveGameLobby();
                             ClearCurrentRoom();
                         }
                         return;
@@ -2158,9 +2319,18 @@ namespace Overrank
 
         private void LeaveCurrentRoom()
         {
+            LeaveCurrentRoom(true);
+        }
+
+        private void LeaveCurrentRoom(bool leaveGameLobby)
+        {
             if (_client == null || string.IsNullOrEmpty(_currentRoomId))
             {
                 ClearCurrentRoom();
+                if (leaveGameLobby)
+                {
+                    RequestLeaveGameLobby();
+                }
                 return;
             }
             string roomId = _currentRoomId;
@@ -2180,6 +2350,61 @@ namespace Overrank
                     _roomPage = 2;
                     RefreshRooms();
                 });
+            if (leaveGameLobby)
+            {
+                RequestLeaveGameLobby();
+            }
+        }
+
+        private void KickRoomMember(RoomMember member)
+        {
+            if (_client == null
+                || !_isRoomHost
+                || _roomRequestRunning
+                || member == null
+                || member.is_host
+                || string.IsNullOrEmpty(member.client_id)
+                || string.IsNullOrEmpty(_currentRoomId))
+            {
+                return;
+            }
+            string roomId = _currentRoomId;
+            _roomRequestRunning = true;
+            _client.KickRoomMember(
+                roomId,
+                new RoomKickRequest
+                {
+                    client_id = _clientId,
+                    host_token = _roomHostToken,
+                    target_client_id = member.client_id
+                },
+                delegate(RoomInfo room, string error)
+                {
+                    _roomRequestRunning = false;
+                    if (!string.Equals(roomId, _currentRoomId, StringComparison.Ordinal))
+                    {
+                        return;
+                    }
+                    if (!string.IsNullOrEmpty(error) || room == null)
+                    {
+                        _roomError = RoomErrorLabel(error);
+                        return;
+                    }
+                    ApplyCurrentRoomUpdate(room);
+                    _roomError = null;
+                });
+        }
+
+        private void RequestLeaveGameLobby()
+        {
+            string error;
+            if (!SessionContext.RequestLeaveLobby(out error) && !string.IsNullOrEmpty(error))
+            {
+                _roomError = OverrankText.Get(
+                    "Could not leave the Steam game lobby: ",
+                    "无法退出 Steam 游戏战局：") + error;
+                _log.LogWarning("Could not leave the Steam game lobby: " + error);
+            }
         }
 
         private void SetCurrentRoom(RoomInfo room, bool isHost, string hostToken)
@@ -2189,6 +2414,7 @@ namespace Overrank
             _roomLobbyMissingSince = -1f;
             _lastObservedRoomStatus = isHost ? CurrentRoomStatus() : string.Empty;
             _nextRoomStatusCheck = 0f;
+            _nextRoomMembershipCheck = 0f;
             _roomHostToken = hostToken ?? string.Empty;
             ApplyCurrentRoom(room);
         }
@@ -2209,11 +2435,36 @@ namespace Overrank
 
         private void ApplyCurrentRoomUpdate(RoomInfo room)
         {
+            if (room != null
+                && HasUnreadRoomMessage(room.messages)
+                && !(_showPanel && _roomPage == 1))
+            {
+                _roomMessageUnread = true;
+            }
             if (room != null && _currentRoom != null)
             {
                 room.messages = MergeMessages(_currentRoom.messages, room.messages);
             }
             ApplyCurrentRoom(room);
+        }
+
+        private bool HasUnreadRoomMessage(RoomMessage[] messages)
+        {
+            if (messages == null)
+            {
+                return false;
+            }
+            for (int index = 0; index < messages.Length; index++)
+            {
+                RoomMessage message = messages[index];
+                if (message != null
+                    && message.message_id > _lastRoomMessageId
+                    && !string.Equals(message.player_id, _playerId, StringComparison.Ordinal))
+                {
+                    return true;
+                }
+            }
+            return false;
         }
 
         private void ApplyRoomList(RoomListResponse response)
@@ -2381,8 +2632,11 @@ namespace Overrank
             _roomLobbyMissingSince = -1f;
             _lastObservedRoomStatus = string.Empty;
             _nextRoomStatusCheck = 0f;
+            _nextRoomMembershipCheck = 0f;
             _lastRoomMessageId = 0;
+            _roomMessageUnread = false;
             _nextRoomRefresh = 0f;
+            _roomHeartbeatRunning = false;
         }
 
         private static int CurrentGamePlayerCount()
@@ -2569,8 +2823,19 @@ namespace Overrank
                     "The game has already started and cannot be joined.",
                     "游戏已经开始，无法加入");
             }
-            if (error.IndexOf("Lobby chat rate limit exceeded", StringComparison.OrdinalIgnoreCase) >= 0
-                || error.IndexOf("HTTP 429", StringComparison.OrdinalIgnoreCase) >= 0)
+            if (error.IndexOf("kicked from the room", StringComparison.OrdinalIgnoreCase) >= 0)
+            {
+                return OverrankText.Get(
+                    "You were removed from the room.",
+                    "你已被房主移出房间");
+            }
+            if (error.IndexOf("Room list refresh rate limit exceeded", StringComparison.OrdinalIgnoreCase) >= 0)
+            {
+                return OverrankText.Get(
+                    "Refreshing too quickly. Please wait a moment.",
+                    "刷新过快，请稍后再试");
+            }
+            if (error.IndexOf("Lobby chat rate limit exceeded", StringComparison.OrdinalIgnoreCase) >= 0)
             {
                 return OverrankText.Get(
                     "Sending too quickly. Please wait a moment.",
@@ -2685,6 +2950,21 @@ namespace Overrank
                         ApplyLeaderboard(response, true);
                     }
                 });
+        }
+
+        private bool CanManuallyRefreshLeaderboard()
+        {
+            return !_requestRunning && Time.unscaledTime >= _nextManualLeaderboardRefresh;
+        }
+
+        private bool BeginManualLeaderboardRefresh()
+        {
+            if (!CanManuallyRefreshLeaderboard())
+            {
+                return false;
+            }
+            _nextManualLeaderboardRefresh = Time.unscaledTime + 1f;
+            return true;
         }
 
         private string CurrentLeaderboardCacheKey()

@@ -17,6 +17,7 @@ from overrank_server.app import (  # noqa: E402
     create_room,
     join_room,
     join_round,
+    kick_room_member,
     leaderboard,
     leave_room,
     list_rooms,
@@ -35,6 +36,7 @@ from overrank_server.schemas import (  # noqa: E402
     RoomCreate,
     RoomHeartbeat,
     RoomJoin,
+    RoomKick,
     RoomLeave,
     RoomMessage,
     RoundAssistance,
@@ -487,6 +489,7 @@ class OverrankApiTests(unittest.TestCase):
 
     def test_ephemeral_room_join_heartbeat_chat_and_leave(self):
         app_module._rooms.clear()
+        app_module._room_list_request_times.clear()
         app_module._lobby_chat["messages"].clear()
         app_module._lobby_chat["next_message_id"] = 1
         app_module._lobby_message_times.clear()
@@ -509,6 +512,7 @@ class OverrankApiTests(unittest.TestCase):
         self.assertEqual(created["game_player_count"], 2)
         self.assertEqual(created["members"][0]["player_name"], "Host")
         self.assertNotEqual(created["host_token"], "")
+        self.assertEqual(created["members"][0]["client_id"], "room-host-client-0001")
         room_id = created["room_id"]
         self.assertEqual(len(room_id), 6)
         self.assertTrue(room_id.isdigit())
@@ -519,6 +523,7 @@ class OverrankApiTests(unittest.TestCase):
         self.assertNotIn("members", public)
         self.assertNotIn("messages", public)
         self.assertTrue(public["is_owner"])
+        app_module._room_list_request_times.clear()
         unchanged_room_list = list_rooms(
             "room-host-client-0001",
             0,
@@ -583,6 +588,7 @@ class OverrankApiTests(unittest.TestCase):
         )
         self.assertEqual(joined["lobby_id"], "109775241234567890")
         self.assertEqual(joined["member_count"], 2)
+        app_module._room_list_request_times.clear()
         changed_room_list = list_rooms(
             "room-host-client-0001",
             0,
@@ -750,6 +756,66 @@ class OverrankApiTests(unittest.TestCase):
         )
         self.assertTrue(closed["room_closed"])
         self.assertEqual(list_rooms()["rooms"], [])
+
+    def test_room_host_can_kick_and_ban_a_member(self):
+        app_module._rooms.clear()
+        app_module._room_list_request_times.clear()
+        created = create_room(
+            RoomCreate(
+                client_id="kick-host-client-00001",
+                player_id="kick-host-player-00001",
+                player_name="Host",
+                title="Kick test",
+                lobby_id="109775241234567894",
+                game_player_count=2,
+            )
+        )
+        room_id = created["room_id"]
+        join_room(
+            room_id,
+            RoomJoin(
+                client_id="kick-guest-client-0001",
+                player_id="kick-guest-player-0001",
+                player_name="Guest",
+            ),
+        )
+        kicked = kick_room_member(
+            room_id,
+            RoomKick(
+                client_id="kick-host-client-00001",
+                host_token=created["host_token"],
+                target_client_id="kick-guest-client-0001",
+            ),
+        )
+        self.assertEqual(kicked["member_count"], 1)
+        with self.assertRaises(app_module.HTTPException) as heartbeat_rejected:
+            room_heartbeat(
+                room_id,
+                RoomHeartbeat(
+                    client_id="kick-guest-client-0001",
+                    player_id="kick-guest-player-0001",
+                    player_name="Guest",
+                ),
+            )
+        self.assertEqual(heartbeat_rejected.exception.status_code, 403)
+        with self.assertRaises(app_module.HTTPException) as rejoin_rejected:
+            join_room(
+                room_id,
+                RoomJoin(
+                    client_id="kick-guest-client-0001",
+                    player_id="kick-guest-player-0001",
+                    player_name="Guest",
+                ),
+            )
+        self.assertEqual(rejoin_rejected.exception.status_code, 403)
+
+    def test_room_list_refresh_is_rate_limited_per_client(self):
+        app_module._room_list_request_times.clear()
+        list_rooms("refresh-client-000001")
+        with self.assertRaises(app_module.HTTPException) as rate_limited:
+            list_rooms("refresh-client-000001")
+        self.assertEqual(rate_limited.exception.status_code, 429)
+        app_module._room_list_request_times.clear()
 
     def test_room_list_prioritizes_lobbies_and_rejects_full_games(self):
         app_module._rooms.clear()

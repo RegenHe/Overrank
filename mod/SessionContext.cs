@@ -128,6 +128,29 @@ namespace Overrank
             }
         }
 
+        internal static bool RequestLeaveLobby(out string error)
+        {
+            error = string.Empty;
+            try
+            {
+                IOnlinePlatformManager platform = GameUtils.RequireManagerInterface<IOnlinePlatformManager>();
+                IOnlineMultiplayerSessionCoordinator coordinator = platform == null
+                    ? null
+                    : platform.OnlineMultiplayerSessionCoordinator();
+                if (coordinator == null || coordinator.IsIdle())
+                {
+                    return true;
+                }
+                coordinator.Leave();
+                return true;
+            }
+            catch (Exception exception)
+            {
+                error = exception.Message;
+                return false;
+            }
+        }
+
         private static string Hash(string value)
         {
             using (SHA256 sha = SHA256.Create())

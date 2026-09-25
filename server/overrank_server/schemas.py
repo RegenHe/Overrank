@@ -222,5 +222,11 @@ class RoomLeave(BaseModel):
     host_token: str = Field(default="", max_length=64)
 
 
+class RoomKick(BaseModel):
+    client_id: str = Field(min_length=16, max_length=128)
+    host_token: str = Field(min_length=64, max_length=64)
+    target_client_id: str = Field(min_length=16, max_length=128)
+
+
 Metric = Literal["score", "dishes"]
 Assistance = Literal["all", "unassisted", "assisted"]

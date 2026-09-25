@@ -19,6 +19,7 @@ from .schemas import (
     RoomCreate,
     RoomHeartbeat,
     RoomJoin,
+    RoomKick,
     RoomLeave,
     RoomMessage,
     Submission,
@@ -32,6 +33,7 @@ ROOM_TTL_SECONDS = 65
 ROOM_MEMBER_TTL_SECONDS = 65
 ROOM_MESSAGE_LIMIT = 100
 ROOM_LIST_LIMIT = 100
+ROOM_LIST_MIN_INTERVAL_SECONDS = 1.0
 LOBBY_MESSAGE_TTL_SECONDS = 4 * 60 * 60
 LOBBY_MESSAGE_RATE_LIMIT = 10
 LOBBY_MESSAGE_RATE_WINDOW_SECONDS = 60
@@ -44,6 +46,8 @@ _attempt_rounds: dict[tuple[str, str], str] = {}
 _room_lock = threading.Lock()
 _rooms: dict[str, dict] = {}
 _room_catalog: dict[str, int] = {"revision": 1}
+_room_list_request_times: dict[str, float] = {}
+_room_list_rate_cleanup_at = 0.0
 _lobby_chat: dict[str, object] = {"next_message_id": 1, "messages": []}
 _lobby_message_times: dict[str, list[float]] = {}
 
@@ -214,6 +218,7 @@ def _room_response(
             {
                 "members": [
                     {
+                        "client_id": member["client_id"],
                         "player_id": member["player_id"],
                         "player_name": member["player_name"],
                         "is_host": member["client_id"] == state["host_client_id"],
@@ -358,10 +363,25 @@ def list_rooms(
     after_message_id: int = Query(default=0, ge=0),
     room_revision: int = Query(default=0, ge=0),
 ) -> dict:
+    global _room_list_rate_cleanup_at
     with _room_lock:
         now = time.time()
         _purge_rooms(now)
         viewer_client_id = client_id if isinstance(client_id, str) else ""
+        if viewer_client_id:
+            previous_request = _room_list_request_times.get(viewer_client_id, 0.0)
+            if now - previous_request < ROOM_LIST_MIN_INTERVAL_SECONDS:
+                raise HTTPException(status_code=429, detail="Room list refresh rate limit exceeded")
+            _room_list_request_times[viewer_client_id] = now
+            if now >= _room_list_rate_cleanup_at:
+                stale_refresh_clients = [
+                    key
+                    for key, requested_at in _room_list_request_times.items()
+                    if requested_at < now - ROOM_TTL_SECONDS
+                ]
+                for key in stale_refresh_clients:
+                    _room_list_request_times.pop(key, None)
+                _room_list_rate_cleanup_at = now + ROOM_TTL_SECONDS
         message_cursor = after_message_id if isinstance(after_message_id, int) else 0
         known_revision = room_revision if isinstance(room_revision, int) else 0
         current_revision = _room_catalog["revision"]
@@ -419,6 +439,8 @@ def create_room(payload: RoomCreate) -> dict:
             "created_at": now,
             "host_seen_at": now,
             "members": {payload.client_id: host},
+            "kicked_client_ids": set(),
+            "kicked_player_ids": set(),
             "messages": [],
             "next_message_id": 1,
         }
@@ -441,6 +463,9 @@ def join_room(room_id: str, payload: RoomJoin) -> dict:
         if (payload.client_id == state["host_client_id"]
                 or (host_member is not None and payload.player_id == host_member["player_id"])):
             raise HTTPException(status_code=409, detail="You already own this room")
+        if (payload.client_id in state["kicked_client_ids"]
+                or payload.player_id in state["kicked_player_ids"]):
+            raise HTTPException(status_code=403, detail="You were kicked from the room")
         if state["status"] == "playing":
             raise HTTPException(status_code=409, detail="The game has already started")
         if state["game_player_count"] >= state["game_player_limit"]:
@@ -519,6 +544,9 @@ def room_heartbeat(room_id: str, payload: RoomHeartbeat) -> dict:
             raise HTTPException(status_code=404, detail="Room not found")
         member = state["members"].get(payload.client_id)
         if member is None:
+            if (payload.client_id in state["kicked_client_ids"]
+                    or payload.player_id in state["kicked_player_ids"]):
+                raise HTTPException(status_code=403, detail="You were kicked from the room")
             raise HTTPException(status_code=409, detail="Join the room before sending a heartbeat")
         joined_at = member["joined_at"]
         member = _room_member(payload, now)
@@ -603,6 +631,28 @@ def leave_room(room_id: str, payload: RoomLeave) -> dict:
         if state["members"].pop(payload.client_id, None) is not None:
             _bump_room_revision()
         return {"left": True, "room_closed": False}
+
+
+@app.post("/api/v1/rooms/{room_id}/kick", dependencies=[Depends(require_api_key)])
+def kick_room_member(room_id: str, payload: RoomKick) -> dict:
+    with _room_lock:
+        _purge_rooms(time.time())
+        state = _rooms.get(room_id)
+        if state is None:
+            raise HTTPException(status_code=404, detail="Room not found")
+        if payload.client_id != state["host_client_id"]:
+            raise HTTPException(status_code=403, detail="Only the room host can kick members")
+        if not hmac.compare_digest(state["host_token"], payload.host_token):
+            raise HTTPException(status_code=403, detail="Invalid room host token")
+        if payload.target_client_id == state["host_client_id"]:
+            raise HTTPException(status_code=409, detail="The room host cannot be kicked")
+        target = state["members"].pop(payload.target_client_id, None)
+        if target is None:
+            raise HTTPException(status_code=404, detail="Room member not found")
+        state["kicked_client_ids"].add(payload.target_client_id)
+        state["kicked_player_ids"].add(target["player_id"])
+        _bump_room_revision()
+        return _room_response(state, include_lobby=True)
 
 
 @app.post("/api/v1/presence", dependencies=[Depends(require_api_key)])

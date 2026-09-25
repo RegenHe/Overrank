@@ -164,6 +164,17 @@ namespace Overrank
                 callback));
         }
 
+        internal void KickRoomMember(
+            string roomId,
+            RoomKickRequest request,
+            Action<RoomInfo, string> callback)
+        {
+            _host.StartCoroutine(PostJsonResponse(
+                BaseUrl + "/api/v1/rooms/" + UnityWebRequest.EscapeURL(roomId) + "/kick",
+                JsonUtility.ToJson(request),
+                callback));
+        }
+
         internal bool SendPresence(PresenceHeartbeat heartbeat, Action<PresenceResponse, string> callback)
         {
             if (_presenceRunning || heartbeat == null)
