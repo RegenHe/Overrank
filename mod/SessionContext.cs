@@ -151,6 +151,24 @@ namespace Overrank
             }
         }
 
+        internal static bool IsMultiplayerSessionIdle()
+        {
+            try
+            {
+                IOnlinePlatformManager platform = GameUtils.RequireManagerInterface<IOnlinePlatformManager>();
+                IOnlineMultiplayerSessionCoordinator coordinator = platform == null
+                    ? null
+                    : platform.OnlineMultiplayerSessionCoordinator();
+                return coordinator != null && coordinator.IsIdle();
+            }
+            catch
+            {
+                // An unavailable coordinator during a scene transition is an
+                // unknown state, not proof that the player left the lobby.
+                return false;
+            }
+        }
+
         private static string Hash(string value)
         {
             using (SHA256 sha = SHA256.Create())

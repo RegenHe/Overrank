@@ -1243,7 +1243,7 @@ namespace Overrank
             float tableWidth = panel.width - 28f;
             const float rankWidth = 42f;
             const float idWidth = 62f;
-            const float labelWidth = 190f;
+            const float labelWidth = 250f;
             const float scoreWidth = 205f;
             const float dishesWidth = 205f;
             float playsWidth = tableWidth - rankWidth - idWidth - labelWidth - scoreWidth - dishesWidth;
@@ -1254,7 +1254,11 @@ namespace Overrank
                 headerY,
                 idWidth,
                 OverrankText.Get("Key", "关卡标识"));
-            DrawStatisticCell(tableX + rankWidth + idWidth, headerY, labelWidth, "Level label");
+            DrawStatisticCell(
+                tableX + rankWidth + idWidth,
+                headerY,
+                labelWidth,
+                OverrankText.Get("Level label", "关卡名称"));
             DrawStatisticCell(
                 tableX + rankWidth + idWidth + labelWidth,
                 headerY,
@@ -1269,7 +1273,7 @@ namespace Overrank
                 tableX + rankWidth + idWidth + labelWidth + scoreWidth + dishesWidth,
                 headerY,
                 playsWidth,
-                OverrankText.Get("7-day plays", "近七天游玩次数"));
+                OverrankText.Get("7-day plays", "7 天次数"));
 
             PopularLevelEntry[] entries = _popularLevels == null || _popularLevels.entries == null
                 ? new PopularLevelEntry[0]
@@ -1940,16 +1944,31 @@ namespace Overrank
                 out observedLobbyId,
                 out ignoredLobbyKey,
                 out ignoredMemberCount);
+            string roomStatus = CurrentRoomStatus();
             if (hasLobby)
             {
                 _roomLobbyMissingSince = -1f;
-                if (expectedLobbyId != 0UL && observedLobbyId != expectedLobbyId)
+                if (expectedLobbyId != 0UL
+                    && observedLobbyId != expectedLobbyId
+                    && !string.Equals(roomStatus, "playing", StringComparison.Ordinal))
                 {
+                    _log.LogWarning(
+                        "Leaving Overrank room because the Steam lobby changed while still in the player lobby.");
                     _roomError = OverrankText.Get(
                         "Left the Overrank room after switching Steam game lobbies.",
                         "Steam 游戏战局已切换，已离开 Overrank 房间");
                     LeaveCurrentRoom(false);
                 }
+                return;
+            }
+            if (string.Equals(roomStatus, "playing", StringComparison.Ordinal))
+            {
+                _roomLobbyMissingSince = -1f;
+                return;
+            }
+            if (!SessionContext.IsMultiplayerSessionIdle())
+            {
+                _roomLobbyMissingSince = -1f;
                 return;
             }
             if (_roomLobbyMissingSince < 0f)
@@ -1959,6 +1978,8 @@ namespace Overrank
             }
             if (Time.unscaledTime - _roomLobbyMissingSince >= 5f)
             {
+                _log.LogWarning(
+                    "Leaving Overrank room because the Steam multiplayer session remained idle in the player lobby.");
                 _roomError = OverrankText.Get(
                     "Left the Overrank room after disconnecting from the Steam game lobby.",
                     "与 Steam 游戏战局断开，已离开 Overrank 房间");
@@ -2297,8 +2318,14 @@ namespace Overrank
                 out observedLobbyId,
                 out ignoredLobbyKey,
                 out ignoredMemberCount);
-            if (hasLobby && expectedLobbyId != 0UL && observedLobbyId != expectedLobbyId)
+            string roomStatus = CurrentRoomStatus();
+            bool lobbyMatches = expectedLobbyId == 0UL || observedLobbyId == expectedLobbyId;
+            if (hasLobby
+                && !lobbyMatches
+                && !string.Equals(roomStatus, "playing", StringComparison.Ordinal))
             {
+                _log.LogWarning(
+                    "Leaving Overrank room because the Steam lobby changed while still in the player lobby.");
                 _roomError = OverrankText.Get(
                     "Left the Overrank room after switching Steam game lobbies.",
                     "Steam 游戏战局已切换，已离开 Overrank 房间");
@@ -2311,17 +2338,26 @@ namespace Overrank
             }
             else
             {
-                if (_roomLobbyMissingSince < 0f)
+                if (!SessionContext.IsMultiplayerSessionIdle())
                 {
-                    _roomLobbyMissingSince = Time.unscaledTime;
+                    _roomLobbyMissingSince = -1f;
                 }
-                else if (Time.unscaledTime - _roomLobbyMissingSince >= 5f)
+                else
                 {
-                    _roomError = OverrankText.Get(
-                        "Left the Overrank room after disconnecting from the Steam game lobby.",
-                        "与 Steam 游戏战局断开，已离开 Overrank 房间");
-                    LeaveCurrentRoom(false);
-                    return;
+                    if (_roomLobbyMissingSince < 0f)
+                    {
+                        _roomLobbyMissingSince = Time.unscaledTime;
+                    }
+                    else if (Time.unscaledTime - _roomLobbyMissingSince >= 5f)
+                    {
+                        _log.LogWarning(
+                            "Leaving Overrank room because the Steam multiplayer session remained idle in the player lobby.");
+                        _roomError = OverrankText.Get(
+                            "Left the Overrank room after disconnecting from the Steam game lobby.",
+                            "与 Steam 游戏战局断开，已离开 Overrank 房间");
+                        LeaveCurrentRoom(false);
+                        return;
+                    }
                 }
             }
             string roomId = _currentRoomId;
@@ -2334,12 +2370,12 @@ namespace Overrank
                     player_id = _playerId,
                     player_name = _playerName,
                     host_token = _isRoomHost ? _roomHostToken : string.Empty,
-                    lobby_id = !_isRoomHost || !hasLobby
+                    lobby_id = !_isRoomHost || !hasLobby || !lobbyMatches
                         ? string.Empty
                         : observedLobbyId.ToString(),
                     game_player_count = CurrentGamePlayerCount(),
                     game_player_limit = 4,
-                    status = CurrentRoomStatus(),
+                    status = roomStatus,
                     last_message_id = _lastRoomMessageId
                 },
                 delegate(RoomInfo room, string error)
@@ -2351,6 +2387,10 @@ namespace Overrank
                     }
                     if (!string.IsNullOrEmpty(error) || room == null)
                     {
+                        if (!string.IsNullOrEmpty(error))
+                        {
+                            _log.LogWarning("Overrank room heartbeat failed: " + error);
+                        }
                         _roomError = RoomErrorLabel(error);
                         if (!string.IsNullOrEmpty(error)
                             && (error.IndexOf("HTTP 403", StringComparison.Ordinal) >= 0
@@ -2783,6 +2823,11 @@ namespace Overrank
 
         private static string CurrentRoomStatus()
         {
+            LevelIdentity activeLevel;
+            if (TryReadActiveLevel(out activeLevel))
+            {
+                return "playing";
+            }
             FrontendPlayerLobby playerLobby = FindFrontendPlayerLobby();
             return playerLobby != null && playerLobby.isActiveAndEnabled ? "lobby" : "playing";
         }
