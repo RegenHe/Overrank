@@ -85,7 +85,6 @@ namespace Overrank
         private string _currentRoomId;
         private string _roomHostToken;
         private bool _isRoomHost;
-        private float _roomLobbyMissingSince = -1f;
         private string _lastObservedRoomStatus;
         private float _nextRoomStatusCheck;
         private float _nextRoomMembershipCheck;
@@ -1947,43 +1946,17 @@ namespace Overrank
             string roomStatus = CurrentRoomStatus();
             if (hasLobby)
             {
-                _roomLobbyMissingSince = -1f;
                 if (expectedLobbyId != 0UL
                     && observedLobbyId != expectedLobbyId
-                    && !string.Equals(roomStatus, "playing", StringComparison.Ordinal))
+                    && !string.Equals(roomStatus, "playing", StringComparison.Ordinal)
+                    && !_isRoomHost)
                 {
-                    _log.LogWarning(
-                        "Leaving Overrank room because the Steam lobby changed while still in the player lobby.");
                     _roomError = OverrankText.Get(
                         "Left the Overrank room after switching Steam game lobbies.",
                         "Steam 游戏战局已切换，已离开 Overrank 房间");
                     LeaveCurrentRoom(false);
                 }
                 return;
-            }
-            if (string.Equals(roomStatus, "playing", StringComparison.Ordinal))
-            {
-                _roomLobbyMissingSince = -1f;
-                return;
-            }
-            if (!SessionContext.IsMultiplayerSessionIdle())
-            {
-                _roomLobbyMissingSince = -1f;
-                return;
-            }
-            if (_roomLobbyMissingSince < 0f)
-            {
-                _roomLobbyMissingSince = Time.unscaledTime;
-                return;
-            }
-            if (Time.unscaledTime - _roomLobbyMissingSince >= 5f)
-            {
-                _log.LogWarning(
-                    "Leaving Overrank room because the Steam multiplayer session remained idle in the player lobby.");
-                _roomError = OverrankText.Get(
-                    "Left the Overrank room after disconnecting from the Steam game lobby.",
-                    "与 Steam 游戏战局断开，已离开 Overrank 房间");
-                LeaveCurrentRoom(false);
             }
         }
 
@@ -2318,47 +2291,18 @@ namespace Overrank
                 out observedLobbyId,
                 out ignoredLobbyKey,
                 out ignoredMemberCount);
-            string roomStatus = CurrentRoomStatus();
+            string roomStatus = hasLobby ? CurrentRoomStatus() : "playing";
             bool lobbyMatches = expectedLobbyId == 0UL || observedLobbyId == expectedLobbyId;
             if (hasLobby
                 && !lobbyMatches
-                && !string.Equals(roomStatus, "playing", StringComparison.Ordinal))
+                && !string.Equals(roomStatus, "playing", StringComparison.Ordinal)
+                && !_isRoomHost)
             {
-                _log.LogWarning(
-                    "Leaving Overrank room because the Steam lobby changed while still in the player lobby.");
                 _roomError = OverrankText.Get(
                     "Left the Overrank room after switching Steam game lobbies.",
                     "Steam 游戏战局已切换，已离开 Overrank 房间");
                 LeaveCurrentRoom(false);
                 return;
-            }
-            if (hasLobby)
-            {
-                _roomLobbyMissingSince = -1f;
-            }
-            else
-            {
-                if (!SessionContext.IsMultiplayerSessionIdle())
-                {
-                    _roomLobbyMissingSince = -1f;
-                }
-                else
-                {
-                    if (_roomLobbyMissingSince < 0f)
-                    {
-                        _roomLobbyMissingSince = Time.unscaledTime;
-                    }
-                    else if (Time.unscaledTime - _roomLobbyMissingSince >= 5f)
-                    {
-                        _log.LogWarning(
-                            "Leaving Overrank room because the Steam multiplayer session remained idle in the player lobby.");
-                        _roomError = OverrankText.Get(
-                            "Left the Overrank room after disconnecting from the Steam game lobby.",
-                            "与 Steam 游戏战局断开，已离开 Overrank 房间");
-                        LeaveCurrentRoom(false);
-                        return;
-                    }
-                }
             }
             string roomId = _currentRoomId;
             _roomHeartbeatRunning = true;
@@ -2370,7 +2314,9 @@ namespace Overrank
                     player_id = _playerId,
                     player_name = _playerName,
                     host_token = _isRoomHost ? _roomHostToken : string.Empty,
-                    lobby_id = !_isRoomHost || !hasLobby || !lobbyMatches
+                    lobby_id = !_isRoomHost
+                        || !hasLobby
+                        || (!lobbyMatches && !string.Equals(roomStatus, "lobby", StringComparison.Ordinal))
                         ? string.Empty
                         : observedLobbyId.ToString(),
                     game_player_count = CurrentGamePlayerCount(),
@@ -2387,10 +2333,6 @@ namespace Overrank
                     }
                     if (!string.IsNullOrEmpty(error) || room == null)
                     {
-                        if (!string.IsNullOrEmpty(error))
-                        {
-                            _log.LogWarning("Overrank room heartbeat failed: " + error);
-                        }
                         _roomError = RoomErrorLabel(error);
                         if (!string.IsNullOrEmpty(error)
                             && (error.IndexOf("HTTP 403", StringComparison.Ordinal) >= 0
@@ -2581,7 +2523,6 @@ namespace Overrank
         {
             _currentRoomId = room.room_id ?? string.Empty;
             _isRoomHost = isHost;
-            _roomLobbyMissingSince = -1f;
             _lastObservedRoomStatus = isHost ? CurrentRoomStatus() : string.Empty;
             _nextRoomStatusCheck = 0f;
             _nextRoomMembershipCheck = 0f;
@@ -2799,7 +2740,6 @@ namespace Overrank
             _currentRoomId = string.Empty;
             _roomHostToken = string.Empty;
             _isRoomHost = false;
-            _roomLobbyMissingSince = -1f;
             _lastObservedRoomStatus = string.Empty;
             _nextRoomStatusCheck = 0f;
             _nextRoomMembershipCheck = 0f;

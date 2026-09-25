@@ -34,8 +34,8 @@ ROOM_TTL_SECONDS = 180
 ROOM_MEMBER_TTL_SECONDS = 180
 ROOM_MESSAGE_LIMIT = 100
 ROOM_LIST_LIMIT = 100
-ROOM_LIST_MIN_INTERVAL_SECONDS = 1.0
-LEADERBOARD_MIN_INTERVAL_SECONDS = 1.0
+ROOM_LIST_MIN_INTERVAL_SECONDS = 0.5
+LEADERBOARD_MIN_INTERVAL_SECONDS = 0.5
 LOBBY_MESSAGE_TTL_SECONDS = 4 * 60 * 60
 LOBBY_MESSAGE_RATE_LIMIT = 10
 LOBBY_MESSAGE_RATE_WINDOW_SECONDS = 60
@@ -92,7 +92,7 @@ async def lifespan(_: FastAPI):
     yield
 
 
-app = FastAPI(title="Overrank", version="1.1.0", lifespan=lifespan)
+app = FastAPI(title="Overrank", version="2.0.0", lifespan=lifespan)
 
 
 def _active_presence(now: float | None = None) -> list[dict]:
@@ -605,14 +605,17 @@ def room_heartbeat(room_id: str, payload: RoomHeartbeat) -> dict:
         if payload.client_id == state["host_client_id"]:
             if not payload.host_token or not hmac.compare_digest(state["host_token"], payload.host_token):
                 raise HTTPException(status_code=403, detail="Invalid room host token")
-            if payload.lobby_id and payload.lobby_id != state["lobby_id"]:
-                raise HTTPException(status_code=409, detail="The hosted Steam lobby changed")
             visible_before = (
                 state["host_player_name"],
+                state["lobby_id"],
                 state["game_player_limit"],
                 state["game_player_count"],
                 state["status"],
             )
+            if payload.lobby_id and payload.lobby_id != state["lobby_id"]:
+                if payload.status != "lobby":
+                    raise HTTPException(status_code=409, detail="The hosted Steam lobby changed")
+                state["lobby_id"] = payload.lobby_id
             state["host_seen_at"] = now
             state["host_player_name"] = payload.player_name
             state["game_player_limit"] = payload.game_player_limit
@@ -620,6 +623,7 @@ def room_heartbeat(room_id: str, payload: RoomHeartbeat) -> dict:
             state["status"] = payload.status
             visible_after = (
                 state["host_player_name"],
+                state["lobby_id"],
                 state["game_player_limit"],
                 state["game_player_count"],
                 state["status"],

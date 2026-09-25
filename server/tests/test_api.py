@@ -759,6 +759,21 @@ class OverrankApiTests(unittest.TestCase):
                 ),
             )
         self.assertEqual(changed_lobby.exception.status_code, 409)
+        rebound_lobby = room_heartbeat(
+            room_id,
+            RoomHeartbeat(
+                client_id="room-host-client-0001",
+                player_id="room-host-player-0001",
+                player_name="Host",
+                host_token=created["host_token"],
+                lobby_id="109775241234567899",
+                game_player_count=3,
+                game_player_limit=4,
+                status="lobby",
+            ),
+        )
+        self.assertEqual(rebound_lobby["lobby_id"], "109775241234567899")
+        self.assertEqual(rebound_lobby["status"], "lobby")
 
         chatted = post_room_message(
             room_id,
