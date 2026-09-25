@@ -87,6 +87,14 @@ namespace Overrank
             _host.StartCoroutine(GetJson(url, callback));
         }
 
+        internal void RequestPopularLevels(string clientId, Action<PopularLevelsResponse, string> callback)
+        {
+            string url = BaseUrl
+                + "/api/v1/statistics/popular-levels?days=7&limit=10&client_id="
+                + UnityWebRequest.EscapeURL(clientId);
+            _host.StartCoroutine(GetJson(url, callback));
+        }
+
         internal void RequestRooms(
             string clientId,
             int afterMessageId,
@@ -473,6 +481,13 @@ namespace Overrank
             if (played != null)
             {
                 played.levels = ParseObjectArray<PlayedLevel>(json, "levels");
+                return;
+            }
+
+            PopularLevelsResponse popular = parsed as PopularLevelsResponse;
+            if (popular != null)
+            {
+                popular.entries = ParseObjectArray<PopularLevelEntry>(json, "entries");
                 return;
             }
 

@@ -23,6 +23,7 @@ from overrank_server.app import (  # noqa: E402
     list_rooms,
     lobby_messages,
     played_levels,
+    popular_levels,
     post_lobby_message,
     post_room_message,
     presence,
@@ -407,7 +408,83 @@ class OverrankApiTests(unittest.TestCase):
                 )
             self.assertEqual(caught.exception.status_code, 429)
         finally:
-            app_module._leaderboard_request_times.pop(client_id, None)
+            app_module._leaderboard_request_times.pop("leaderboard:" + client_id, None)
+
+    def test_popular_levels_deduplicate_rounds_and_report_ties(self):
+        board = "official-popular-test-001"
+        shared_round = "30000000-0000-0000-0000-000000000001"
+        second_round = "30000000-0000-0000-0000-000000000002"
+        submit(
+            self.payload(
+                "30000000-0000-0000-0000-000000000101",
+                "popular-player-one-001",
+                board,
+                1000,
+                7,
+                "Alice",
+                round_id=shared_round,
+            )
+        )
+        submit(
+            self.payload(
+                "30000000-0000-0000-0000-000000000102",
+                "popular-player-two-002",
+                board,
+                1000,
+                12,
+                "Bob",
+                overwashed_used=True,
+                round_id=shared_round,
+            )
+        )
+        submit(
+            self.payload(
+                "30000000-0000-0000-0000-000000000103",
+                "popular-player-three-3",
+                board,
+                800,
+                12,
+                "Carol",
+                round_id=second_round,
+            )
+        )
+        tied_board = "official-popular-test-002"
+        submit(
+            self.payload(
+                "30000000-0000-0000-0000-000000000104",
+                "popular-tied-player-01",
+                tied_board,
+                700,
+                7,
+                "Dave",
+                round_id="30000000-0000-0000-0000-000000000003",
+            )
+        )
+        submit(
+            self.payload(
+                "30000000-0000-0000-0000-000000000105",
+                "popular-tied-player-02",
+                tied_board,
+                600,
+                6,
+                "Eve",
+                round_id="30000000-0000-0000-0000-000000000004",
+            )
+        )
+
+        response = popular_levels(days=7, limit=50, client_id="")
+        statistic = next(entry for entry in response["entries"] if entry["level_key"] == board)
+        tied_statistic = next(
+            entry for entry in response["entries"] if entry["level_key"] == tied_board
+        )
+        self.assertEqual(statistic["play_count"], 2)
+        self.assertEqual(statistic["rank"], tied_statistic["rank"])
+        self.assertEqual(statistic["top_score"], 1000)
+        self.assertEqual(statistic["top_score_player"], "Bob")
+        self.assertEqual(statistic["top_score_tie_count"], 2)
+        self.assertEqual(statistic["top_dishes"], 12)
+        self.assertEqual(statistic["top_dishes_player"], "Bob")
+        self.assertEqual(statistic["top_dishes_tie_count"], 2)
 
     def test_duplicate_submission_is_idempotent(self):
         payload = self.payload(
@@ -736,6 +813,7 @@ class OverrankApiTests(unittest.TestCase):
             )
         )
         self.assertEqual(lobby_chat["messages"][0]["text"], "Hello lobby")
+        self.assertEqual(lobby_chat["messages"][0]["room_id"], room_id)
         self.assertGreater(lobby_chat["messages"][0]["sent_at"], 0)
         for index in range(9):
             lobby_chat = post_lobby_message(
@@ -761,6 +839,9 @@ class OverrankApiTests(unittest.TestCase):
         lobby_history = lobby_messages(0)
         self.assertEqual(len(lobby_history["messages"]), 10)
         self.assertEqual(lobby_history["messages"][0]["player_name"], "Guest")
+        self.assertTrue(
+            all(message["room_id"] == room_id for message in lobby_history["messages"])
+        )
         lobby_delta = lobby_messages(lobby_history["latest_message_id"] - 1)
         self.assertEqual(len(lobby_delta["messages"]), 1)
         self.assertFalse(lobby_delta["reset"])
@@ -780,11 +861,28 @@ class OverrankApiTests(unittest.TestCase):
         app_module._lobby_chat["messages"][0]["sent_at"] = int(time.time()) - (4 * 60 * 60) - 1
         retained = lobby_messages(0)
         self.assertEqual(len(retained["messages"]), 9)
+        host_lobby_message = post_lobby_message(
+            RoomMessage(
+                client_id="room-host-client-0001",
+                player_id="room-host-player-0001",
+                player_name="Host",
+                text="Host lobby message",
+            )
+        )
+        self.assertEqual(host_lobby_message["messages"][0]["room_id"], room_id)
         left = leave_room(
             room_id,
             RoomLeave(client_id="room-guest-client-01"),
         )
         self.assertFalse(left["room_closed"])
+        after_leave = lobby_messages(0)
+        self.assertTrue(
+            all(
+                message["room_id"] == ""
+                for message in after_leave["messages"]
+                if message["player_id"] == "room-guest-player-01"
+            )
+        )
         self.assertEqual(list_rooms()["rooms"][0]["member_count"], 1)
 
         closed = leave_room(
@@ -959,6 +1057,10 @@ class OverrankApiTests(unittest.TestCase):
             columns = connection.execute("PRAGMA table_info(personal_bests)").fetchall()
             primary_key = [row[1] for row in sorted(columns, key=lambda row: row[5]) if row[5] > 0]
             migrated = connection.execute("SELECT * FROM personal_bests").fetchone()
+            recent_table = connection.execute(
+                "SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'recent_level_plays'"
+            ).fetchone()
+            schema_version = connection.execute("PRAGMA user_version").fetchone()[0]
             self.assertEqual(
                 primary_key,
                 ["player_id", "level_key", "player_count", "metric", "overwashed_used"],
@@ -966,6 +1068,8 @@ class OverrankApiTests(unittest.TestCase):
             self.assertEqual(migrated["score"], 900)
             self.assertEqual(migrated["overwashed_used"], 0)
             self.assertEqual(migrated["overwashed_version"], "")
+            self.assertIsNotNone(recent_table)
+            self.assertEqual(schema_version, 4)
         finally:
             connection.close()
 

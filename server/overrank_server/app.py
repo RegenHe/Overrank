@@ -24,6 +24,7 @@ from .schemas import (
     RoomMessage,
     Submission,
     plain_player_name,
+    plain_text,
 )
 
 
@@ -60,6 +61,29 @@ def require_api_key(x_overrank_key: str | None = Header(default=None)) -> None:
     expected = os.environ.get("OVERRANK_API_KEY", "")
     if expected and (x_overrank_key is None or not hmac.compare_digest(expected, x_overrank_key)):
         raise HTTPException(status_code=401, detail="Invalid API key")
+
+
+def _enforce_read_refresh_rate(client_id: object, category: str, detail: str) -> None:
+    global _leaderboard_rate_cleanup_at
+    viewer_client_id = client_id if isinstance(client_id, str) else ""
+    if not viewer_client_id:
+        return
+    now = time.monotonic()
+    request_key = category + ":" + viewer_client_id
+    with _leaderboard_rate_lock:
+        previous_request = _leaderboard_request_times.get(request_key, 0.0)
+        if now - previous_request < LEADERBOARD_MIN_INTERVAL_SECONDS:
+            raise HTTPException(status_code=429, detail=detail)
+        _leaderboard_request_times[request_key] = now
+        if now >= _leaderboard_rate_cleanup_at:
+            stale_refresh_clients = [
+                key
+                for key, requested_at in _leaderboard_request_times.items()
+                if requested_at < now - PRESENCE_TTL_SECONDS
+            ]
+            for key in stale_refresh_clients:
+                _leaderboard_request_times.pop(key, None)
+            _leaderboard_rate_cleanup_at = now + PRESENCE_TTL_SECONDS
 
 
 @asynccontextmanager
@@ -165,6 +189,7 @@ def _purge_lobby_chat(now: float) -> None:
 
 
 def _lobby_chat_response(after_id: int, now: float) -> dict:
+    _purge_rooms(now)
     _purge_lobby_chat(now)
     messages = list(_lobby_chat["messages"])
     latest_id = messages[-1]["message_id"] if messages else 0
@@ -172,13 +197,31 @@ def _lobby_chat_response(after_id: int, now: float) -> dict:
     reset = after_id > latest_id
     return {
         "messages": [
-            message
+            _lobby_message_response(message)
             for message in messages
             if reset or message["message_id"] > after_id
         ],
         "latest_message_id": latest_id,
         "oldest_message_id": oldest_id,
         "reset": reset,
+    }
+
+
+def _lobby_message_response(message: dict) -> dict:
+    client_id = str(message.get("client_id") or "")
+    room_id = ""
+    if client_id:
+        for candidate_id, state in _rooms.items():
+            if client_id in state["members"]:
+                room_id = candidate_id
+                break
+    return {
+        "message_id": int(message["message_id"]),
+        "player_id": message["player_id"],
+        "player_name": message["player_name"],
+        "room_id": room_id,
+        "text": message["text"],
+        "sent_at": int(message["sent_at"]),
     }
 
 
@@ -508,6 +551,7 @@ def lobby_messages(after_id: int = Query(default=0, ge=0)) -> dict:
 def post_lobby_message(payload: RoomMessage) -> dict:
     with _room_lock:
         now = time.time()
+        _purge_rooms(now)
         _purge_lobby_chat(now)
         recent = [
             sent_at
@@ -520,6 +564,7 @@ def post_lobby_message(payload: RoomMessage) -> dict:
         _lobby_message_times[payload.client_id] = recent
         message = {
             "message_id": int(_lobby_chat["next_message_id"]),
+            "client_id": payload.client_id,
             "player_id": payload.player_id,
             "player_name": payload.player_name,
             "text": payload.text,
@@ -531,7 +576,7 @@ def post_lobby_message(payload: RoomMessage) -> dict:
         if len(messages) > ROOM_MESSAGE_LIMIT:
             del messages[:-ROOM_MESSAGE_LIMIT]
         return {
-            "messages": [message],
+            "messages": [_lobby_message_response(message)],
             "latest_message_id": message["message_id"],
             "oldest_message_id": messages[0]["message_id"],
             "reset": False,
@@ -754,24 +799,11 @@ def leaderboard(
     assistance: Assistance = Query(default="all"),
     client_id: str = Query(default="", max_length=128),
 ) -> dict:
-    global _leaderboard_rate_cleanup_at
-    viewer_client_id = client_id if isinstance(client_id, str) else ""
-    if viewer_client_id:
-        now = time.monotonic()
-        with _leaderboard_rate_lock:
-            previous_request = _leaderboard_request_times.get(viewer_client_id, 0.0)
-            if now - previous_request < LEADERBOARD_MIN_INTERVAL_SECONDS:
-                raise HTTPException(status_code=429, detail="Leaderboard refresh rate limit exceeded")
-            _leaderboard_request_times[viewer_client_id] = now
-            if now >= _leaderboard_rate_cleanup_at:
-                stale_refresh_clients = [
-                    key
-                    for key, requested_at in _leaderboard_request_times.items()
-                    if requested_at < now - PRESENCE_TTL_SECONDS
-                ]
-                for key in stale_refresh_clients:
-                    _leaderboard_request_times.pop(key, None)
-                _leaderboard_rate_cleanup_at = now + PRESENCE_TTL_SECONDS
+    _enforce_read_refresh_rate(
+        client_id,
+        "leaderboard",
+        "Leaderboard refresh rate limit exceeded",
+    )
     order = board_order(metric)
     ranking = rank_order(metric)
     requested_overwashed = around_overwashed if isinstance(around_overwashed, bool) else None
@@ -857,6 +889,168 @@ def leaderboard(
         "self_entries": [entry(row) for row in self_rows],
         "entries": [entry(row) for row in board_rows],
         "nearby": [entry(row) for row in nearby_rows],
+    }
+
+
+@app.get("/api/v1/statistics/popular-levels", dependencies=[Depends(require_api_key)])
+def popular_levels(
+    days: int = Query(default=7, ge=1, le=30),
+    limit: int = Query(default=10, ge=1, le=50),
+    client_id: str = Query(default="", max_length=128),
+) -> dict:
+    _enforce_read_refresh_rate(
+        client_id,
+        "statistics",
+        "Statistics refresh rate limit exceeded",
+    )
+    cutoff = int(time.time()) - days * 24 * 60 * 60
+    with connect() as connection:
+        rows = connection.execute(
+            """
+            WITH popular_counts AS (
+                SELECT
+                    level_key,
+                    COUNT(*) AS play_count,
+                    MAX(played_at) AS latest_play
+                FROM recent_level_plays
+                WHERE played_at >= ?
+                GROUP BY level_key
+            ),
+            popular AS (
+                SELECT
+                    popular_counts.*,
+                    RANK() OVER (ORDER BY play_count DESC) AS rank_position
+                FROM popular_counts
+                ORDER BY play_count DESC, latest_play DESC, level_key ASC
+                LIMIT ?
+            ),
+            metadata AS (
+                SELECT
+                    events.*,
+                    ROW_NUMBER() OVER (
+                        PARTITION BY events.level_key
+                        ORDER BY events.played_at DESC, events.attempt_key ASC
+                    ) AS metadata_row
+                FROM recent_level_plays AS events
+                INNER JOIN popular ON popular.level_key = events.level_key
+            ),
+            score_maximum AS (
+                SELECT records.level_key, MAX(records.score) AS top_score
+                FROM personal_bests AS records
+                INNER JOIN popular ON popular.level_key = records.level_key
+                WHERE records.metric = 'score'
+                GROUP BY records.level_key
+            ),
+            best_score AS (
+                SELECT
+                    records.level_key,
+                    records.player_name,
+                    records.score,
+                    ROW_NUMBER() OVER (
+                        PARTITION BY records.level_key
+                        ORDER BY records.score DESC, records.dishes DESC,
+                            records.completed_at ASC, records.player_id ASC
+                    ) AS score_row
+                FROM personal_bests AS records
+                INNER JOIN score_maximum
+                    ON score_maximum.level_key = records.level_key
+                    AND score_maximum.top_score = records.score
+                WHERE records.metric = 'score'
+            ),
+            score_ties AS (
+                SELECT records.level_key, COUNT(DISTINCT records.player_id) AS tie_count
+                FROM personal_bests AS records
+                INNER JOIN score_maximum
+                    ON score_maximum.level_key = records.level_key
+                    AND score_maximum.top_score = records.score
+                WHERE records.metric = 'score'
+                GROUP BY records.level_key
+            ),
+            dishes_maximum AS (
+                SELECT records.level_key, MAX(records.dishes) AS top_dishes
+                FROM personal_bests AS records
+                INNER JOIN popular ON popular.level_key = records.level_key
+                WHERE records.metric = 'dishes'
+                GROUP BY records.level_key
+            ),
+            best_dishes AS (
+                SELECT
+                    records.level_key,
+                    records.player_name,
+                    records.dishes,
+                    ROW_NUMBER() OVER (
+                        PARTITION BY records.level_key
+                        ORDER BY records.dishes DESC, records.score DESC,
+                            records.completed_at ASC, records.player_id ASC
+                    ) AS dishes_row
+                FROM personal_bests AS records
+                INNER JOIN dishes_maximum
+                    ON dishes_maximum.level_key = records.level_key
+                    AND dishes_maximum.top_dishes = records.dishes
+                WHERE records.metric = 'dishes'
+            ),
+            dishes_ties AS (
+                SELECT records.level_key, COUNT(DISTINCT records.player_id) AS tie_count
+                FROM personal_bests AS records
+                INNER JOIN dishes_maximum
+                    ON dishes_maximum.level_key = records.level_key
+                    AND dishes_maximum.top_dishes = records.dishes
+                WHERE records.metric = 'dishes'
+                GROUP BY records.level_key
+            )
+            SELECT
+                popular.rank_position,
+                popular.level_key,
+                popular.play_count,
+                metadata.dlc_id,
+                metadata.level_id,
+                metadata.level_name,
+                metadata.level_label,
+                best_score.player_name AS top_score_player,
+                best_score.score AS top_score,
+                score_ties.tie_count AS top_score_tie_count,
+                best_dishes.player_name AS top_dishes_player,
+                best_dishes.dishes AS top_dishes,
+                dishes_ties.tie_count AS top_dishes_tie_count
+            FROM popular
+            INNER JOIN metadata
+                ON metadata.level_key = popular.level_key
+                AND metadata.metadata_row = 1
+            LEFT JOIN best_score
+                ON best_score.level_key = popular.level_key
+                AND best_score.score_row = 1
+            LEFT JOIN score_ties
+                ON score_ties.level_key = popular.level_key
+            LEFT JOIN best_dishes
+                ON best_dishes.level_key = popular.level_key
+                AND best_dishes.dishes_row = 1
+            LEFT JOIN dishes_ties
+                ON dishes_ties.level_key = popular.level_key
+            ORDER BY popular.play_count DESC, popular.latest_play DESC,
+                popular.level_key ASC
+            """,
+            (cutoff, limit),
+        ).fetchall()
+    return {
+        "days": days,
+        "entries": [
+            {
+                "rank": int(row["rank_position"]),
+                "level_key": row["level_key"],
+                "dlc_id": int(row["dlc_id"]),
+                "level_id": int(row["level_id"]),
+                "level_name": plain_text(row["level_name"], "Unknown"),
+                "level_label": plain_text(row["level_label"], row["level_name"]),
+                "top_score_player": plain_player_name(row["top_score_player"]),
+                "top_score": int(row["top_score"] or 0),
+                "top_score_tie_count": int(row["top_score_tie_count"] or 0),
+                "top_dishes_player": plain_player_name(row["top_dishes_player"]),
+                "top_dishes": int(row["top_dishes"] or 0),
+                "top_dishes_tie_count": int(row["top_dishes_tie_count"] or 0),
+                "play_count": int(row["play_count"]),
+            }
+            for row in rows
+        ],
     }
 
 

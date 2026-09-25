@@ -144,6 +144,31 @@ namespace Overrank
     }
 
     [Serializable]
+    public sealed class PopularLevelEntry
+    {
+        public int rank;
+        public string level_key;
+        public int dlc_id;
+        public int level_id;
+        public string level_name;
+        public string level_label;
+        public string top_score_player;
+        public int top_score;
+        public int top_score_tie_count;
+        public string top_dishes_player;
+        public int top_dishes;
+        public int top_dishes_tie_count;
+        public int play_count;
+    }
+
+    [Serializable]
+    public sealed class PopularLevelsResponse
+    {
+        public int days;
+        public PopularLevelEntry[] entries = new PopularLevelEntry[0];
+    }
+
+    [Serializable]
     public sealed class RoomCreateRequest
     {
         public string client_id;
@@ -220,6 +245,7 @@ namespace Overrank
         public int message_id;
         public string player_id;
         public string player_name;
+        public string room_id;
         public string text;
         public long sent_at;
     }

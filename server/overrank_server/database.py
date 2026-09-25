@@ -1,13 +1,15 @@
 import os
 import sqlite3
+import time
 from contextlib import contextmanager
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Mapping
 
 
-SCHEMA_VERSION = 3
+SCHEMA_VERSION = 4
 METRICS = ("score", "dishes")
+RECENT_LEVEL_RETENTION_SECONDS = 8 * 24 * 60 * 60
 
 
 def database_path() -> Path:
@@ -116,6 +118,15 @@ def create_schema(connection: sqlite3.Connection) -> None:
             updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
             PRIMARY KEY (player_id, level_key)
         );
+        CREATE TABLE IF NOT EXISTS recent_level_plays (
+            attempt_key TEXT PRIMARY KEY,
+            level_key TEXT NOT NULL,
+            dlc_id INTEGER NOT NULL,
+            level_id INTEGER NOT NULL,
+            level_name TEXT NOT NULL,
+            level_label TEXT NOT NULL,
+            played_at INTEGER NOT NULL
+        );
         """
     )
     _ensure_personal_bests_schema(connection)
@@ -127,6 +138,8 @@ def create_schema(connection: sqlite3.Connection) -> None:
             ON personal_bests(level_key, player_count, metric, dishes DESC, score DESC, completed_at ASC);
         CREATE INDEX IF NOT EXISTS idx_player_levels_recent
             ON player_levels(player_id, last_played DESC);
+        CREATE INDEX IF NOT EXISTS idx_recent_level_plays_time
+            ON recent_level_plays(played_at, level_key);
         """
     )
     connection.execute("PRAGMA user_version = " + str(SCHEMA_VERSION))
@@ -160,6 +173,38 @@ def save_submission(connection: sqlite3.Connection, record: Mapping[str, Any]) -
     """Update the two metric-specific personal bests and the last-played record."""
     overwashed_used = 1 if record.get("overwashed_used", False) else 0
     overwashed_version = str(record.get("overwashed_version") or "")
+    round_id = str(record.get("round_id") or "")
+    attempt_nonce = str(record.get("attempt_nonce") or "")
+    submission_id = str(record["submission_id"])
+    attempt_key = (
+        "round:" + round_id
+        if round_id
+        else "attempt:" + attempt_nonce
+        if attempt_nonce
+        else "submission:" + submission_id
+    )
+    received_epoch = int(time.time())
+    connection.execute(
+        "DELETE FROM recent_level_plays WHERE played_at < ?",
+        (received_epoch - RECENT_LEVEL_RETENTION_SECONDS,),
+    )
+    connection.execute(
+        """
+        INSERT OR IGNORE INTO recent_level_plays (
+            attempt_key, level_key, dlc_id, level_id,
+            level_name, level_label, played_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?)
+        """,
+        (
+            attempt_key,
+            record["level_key"],
+            record["dlc_id"],
+            record["level_id"],
+            record["level_name"],
+            record["level_label"],
+            received_epoch,
+        ),
+    )
     connection.execute(
         """
         INSERT INTO player_levels (

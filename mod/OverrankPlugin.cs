@@ -39,6 +39,7 @@ namespace Overrank
         private Texture2D _panelBackground;
         private bool _showPanel;
         private bool _showLevels;
+        private bool _showStatistics;
         private int _roomPage;
         private bool _requestRunning;
         private string _requestError;
@@ -78,6 +79,7 @@ namespace Overrank
         private LeaderboardResponse _unassistedLeaderboard;
         private LeaderboardResponse _assistedLeaderboard;
         private PlayedLevelsResponse _playedLevels;
+        private PopularLevelsResponse _popularLevels;
         private RoomListResponse _roomList;
         private RoomInfo _currentRoom;
         private string _currentRoomId;
@@ -318,7 +320,7 @@ namespace Overrank
                 _lastLevelName.Value = _selectedLevelName;
                 _lastPlayerCount.Value = _players;
                 _client.Enqueue(submission);
-                if (_showPanel && _roomPage == 0 && !_showLevels)
+                if (_showPanel && _roomPage == 0 && !_showLevels && !_showStatistics)
                 {
                     RefreshBoard();
                 }
@@ -613,7 +615,11 @@ namespace Overrank
             ClearLeaderboardCache();
             if (_showPanel)
             {
-                if (_roomPage == 0 && _showLevels)
+                if (_roomPage == 0 && _showStatistics)
+                {
+                    RefreshPopularLevels();
+                }
+                else if (_roomPage == 0 && _showLevels)
                 {
                     RefreshLevels();
                 }
@@ -687,6 +693,7 @@ namespace Overrank
         {
             _roomPage = 0;
             _showLevels = false;
+            _showStatistics = false;
             TrySelectCurrentLevel();
             if (string.IsNullOrEmpty(_selectedLevelKey))
             {
@@ -772,41 +779,54 @@ namespace Overrank
                 OverrankText.Get("Played levels", "已玩关卡")))
             {
                 _showLevels = true;
+                _showStatistics = false;
                 _roomPage = 0;
                 RefreshLevels();
+            }
+            if (GUI.Button(
+                new Rect(panel.x + 250f, panel.y + 32f, 112f, 26f),
+                OverrankText.Get("Popular", "热门统计")))
+            {
+                _showLevels = false;
+                _showStatistics = true;
+                _roomPage = 0;
+                RefreshPopularLevels();
             }
             if (_separatorTexture != null)
             {
                 GUI.DrawTexture(
-                    new Rect(panel.x + 257f, panel.y + 35f, 1f, 20f),
+                    new Rect(panel.x + 375f, panel.y + 35f, 1f, 20f),
                     _separatorTexture,
                     ScaleMode.StretchToFill,
                     true);
             }
             if (GUI.Button(
-                new Rect(panel.x + 270f, panel.y + 32f, 112f, 26f),
+                new Rect(panel.x + 388f, panel.y + 32f, 112f, 26f),
                 OverrankText.Get("Current room", "当前房间")))
             {
                 _showLevels = false;
+                _showStatistics = false;
                 _roomPage = 1;
                 _roomMessageUnread = false;
                 _nextRoomRefresh = 0f;
             }
             if (GUI.Button(
-                new Rect(panel.x + 388f, panel.y + 32f, 112f, 26f),
+                new Rect(panel.x + 506f, panel.y + 32f, 112f, 26f),
                 OverrankText.Get("Room lobby", "房间大厅")))
             {
                 _showLevels = false;
+                _showStatistics = false;
                 _roomPage = 2;
                 RefreshRooms();
             }
             bool tabsEnabled = GUI.enabled;
             GUI.enabled = tabsEnabled && string.IsNullOrEmpty(_currentRoomId);
             if (GUI.Button(
-                new Rect(panel.x + 506f, panel.y + 32f, 112f, 26f),
+                new Rect(panel.x + 624f, panel.y + 32f, 112f, 26f),
                 OverrankText.Get("Create room", "创建房间")))
             {
                 _showLevels = false;
+                _showStatistics = false;
                 _roomPage = 3;
                 if (string.IsNullOrEmpty(_createRoomTitle))
                 {
@@ -829,6 +849,10 @@ namespace Overrank
             else if (_showLevels)
             {
                 DrawLevels(panel);
+            }
+            else if (_showStatistics)
+            {
+                DrawPopularLevels(panel);
             }
             else
             {
@@ -1166,6 +1190,7 @@ namespace Overrank
                     _lastLevelName.Value = _selectedLevelName;
                     _nearbyMode = 0;
                     _showLevels = false;
+                    _showStatistics = false;
                     RefreshBoard();
                 }
                 GUI.Label(new Rect(panel.x + 22f, y + 2f, panel.width - 230f, 20f), Truncate(displayLabel, 42));
@@ -1197,6 +1222,139 @@ namespace Overrank
             }
             GUI.enabled = true;
             GUI.Label(new Rect(panel.x + 170f, panel.y + 410f, 100f, 20f), (_levelsPage + 1) + " / " + (maxPage + 1));
+        }
+
+        private void DrawPopularLevels(Rect panel)
+        {
+            bool previousEnabled = GUI.enabled;
+            GUI.enabled = previousEnabled && !_requestRunning;
+            if (GUI.Button(
+                new Rect(panel.x + panel.width - 94f, panel.y + 66f, 80f, 24f),
+                OverrankText.Get("Refresh", "刷新")))
+            {
+                RefreshPopularLevels();
+            }
+            GUI.enabled = previousEnabled;
+            GUI.Label(
+                new Rect(panel.x + 14f, panel.y + 70f, panel.width - 120f, 22f),
+                OverrankText.Get("Top 10 popular levels in the last 7 days", "近 7 天热门关卡前 10 名"));
+
+            float tableX = panel.x + 14f;
+            float tableWidth = panel.width - 28f;
+            const float rankWidth = 42f;
+            const float idWidth = 62f;
+            const float labelWidth = 190f;
+            const float scoreWidth = 205f;
+            const float dishesWidth = 205f;
+            float playsWidth = tableWidth - rankWidth - idWidth - labelWidth - scoreWidth - dishesWidth;
+            float headerY = panel.y + 96f;
+            DrawStatisticCell(tableX, headerY, rankWidth, OverrankText.Get("Rank", "排名"));
+            DrawStatisticCell(
+                tableX + rankWidth,
+                headerY,
+                idWidth,
+                OverrankText.Get("Key", "关卡标识"));
+            DrawStatisticCell(tableX + rankWidth + idWidth, headerY, labelWidth, "Level label");
+            DrawStatisticCell(
+                tableX + rankWidth + idWidth + labelWidth,
+                headerY,
+                scoreWidth,
+                OverrankText.Get("Top score player", "最高分玩家（分数）"));
+            DrawStatisticCell(
+                tableX + rankWidth + idWidth + labelWidth + scoreWidth,
+                headerY,
+                dishesWidth,
+                OverrankText.Get("Most dishes player", "最多菜玩家（菜数）"));
+            DrawStatisticCell(
+                tableX + rankWidth + idWidth + labelWidth + scoreWidth + dishesWidth,
+                headerY,
+                playsWidth,
+                OverrankText.Get("7-day plays", "近七天游玩次数"));
+
+            PopularLevelEntry[] entries = _popularLevels == null || _popularLevels.entries == null
+                ? new PopularLevelEntry[0]
+                : _popularLevels.entries;
+            const float rowHeight = 29f;
+            for (int index = 0; index < entries.Length; index++)
+            {
+                PopularLevelEntry entry = entries[index];
+                float y = headerY + 25f + index * rowHeight;
+                GUI.Box(new Rect(tableX, y, tableWidth, rowHeight - 2f), string.Empty);
+                string levelLabel = string.IsNullOrEmpty(entry.level_label)
+                    ? entry.level_name
+                    : entry.level_label;
+                levelLabel = LevelIdentity.ResolveDisplayName(entry.level_key, levelLabel);
+                DrawStatisticCell(tableX, y + 3f, rankWidth, "#" + entry.rank);
+                DrawStatisticCell(
+                    tableX + rankWidth,
+                    y + 3f,
+                    idWidth,
+                    TailLevelKey(entry.level_key, 6));
+                DrawStatisticCell(
+                    tableX + rankWidth + idWidth,
+                    y + 3f,
+                    labelWidth,
+                    Truncate(levelLabel, 22));
+                DrawStatisticCell(
+                    tableX + rankWidth + idWidth + labelWidth,
+                    y + 3f,
+                    scoreWidth,
+                    Truncate(FormatTiedRecord(
+                        entry.top_score_player,
+                        entry.top_score,
+                        entry.top_score_tie_count), 25));
+                DrawStatisticCell(
+                    tableX + rankWidth + idWidth + labelWidth + scoreWidth,
+                    y + 3f,
+                    dishesWidth,
+                    Truncate(FormatTiedRecord(
+                        entry.top_dishes_player,
+                        entry.top_dishes,
+                        entry.top_dishes_tie_count), 25));
+                DrawStatisticCell(
+                    tableX + rankWidth + idWidth + labelWidth + scoreWidth + dishesWidth,
+                    y + 3f,
+                    playsWidth,
+                    entry.play_count.ToString());
+            }
+            if (entries.Length == 0 && !_requestRunning)
+            {
+                GUI.Label(
+                    new Rect(tableX, headerY + 35f, tableWidth, 24f),
+                    OverrankText.Get(
+                        "No play statistics have been collected in the last 7 days.",
+                        "近 7 天尚未收集到游玩统计。"));
+            }
+        }
+
+        private static void DrawStatisticCell(float x, float y, float width, string text)
+        {
+            GUI.Label(new Rect(x + 4f, y, Mathf.Max(0f, width - 8f), 22f), text ?? string.Empty);
+        }
+
+        private static string FormatTiedRecord(string playerName, int value, int tieCount)
+        {
+            string name = string.IsNullOrEmpty(playerName)
+                ? OverrankText.Get("Unknown", "未知")
+                : playerName;
+            if (tieCount <= 1)
+            {
+                return name + " (" + value + ")";
+            }
+            return OverrankText.IsSimplifiedChinese
+                ? name + " 等 " + tieCount + " 人 (" + value + ")"
+                : name + " +" + (tieCount - 1) + " tied (" + value + ")";
+        }
+
+        private static string TailLevelKey(string levelKey, int length)
+        {
+            if (string.IsNullOrEmpty(levelKey))
+            {
+                return "-";
+            }
+            return levelKey.Length <= length
+                ? levelKey
+                : levelKey.Substring(levelKey.Length - length, length);
         }
 
         private void DrawRoomLobby(Rect panel)
@@ -1972,6 +2130,7 @@ namespace Overrank
             if (string.Equals(roomId, _currentRoomId, StringComparison.Ordinal))
             {
                 _showLevels = false;
+                _showStatistics = false;
                 _roomPage = 1;
                 _roomError = null;
                 return;
@@ -2686,6 +2845,11 @@ namespace Overrank
                     builder.AppendLine();
                 }
                 builder.Append(message.player_name ?? string.Empty);
+                if (!string.IsNullOrEmpty(message.room_id))
+                {
+                    builder.Append(" #");
+                    builder.Append(message.room_id);
+                }
                 if (message.sent_at > 0L)
                 {
                     builder.Append(" · ");
@@ -3033,6 +3197,33 @@ namespace Overrank
             }
         }
 
+        private void RefreshPopularLevels()
+        {
+            if (_requestRunning || _client == null)
+            {
+                return;
+            }
+            _requestRunning = true;
+            _requestError = null;
+            _responseSummary = null;
+            _client.RequestPopularLevels(
+                _clientId,
+                delegate(PopularLevelsResponse response, string error)
+                {
+                    _requestRunning = false;
+                    _requestError = LeaderboardErrorLabel(error);
+                    if (response != null)
+                    {
+                        _popularLevels = response;
+                        int count = response.entries == null ? 0 : response.entries.Length;
+                        _responseSummary = OverrankText.IsSimplifiedChinese
+                            ? "已加载 " + count + " 个热门关卡"
+                            : "Loaded " + count + " popular level(s)";
+                        _log.LogInfo("Popular-level statistics loaded: count=" + count + ".");
+                    }
+                });
+        }
+
         private void RefreshLevels()
         {
             RefreshLevels(false);
@@ -3074,6 +3265,7 @@ namespace Overrank
                             _nearbyMode = 0;
                             _roomPage = 0;
                             _showLevels = false;
+                            _showStatistics = false;
                             RefreshBoard();
                         }
                     }
