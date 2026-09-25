@@ -369,6 +369,46 @@ class OverrankApiTests(unittest.TestCase):
         self.assertEqual(activity_count, 1)
         self.assertEqual(played_levels("player-one-00001", 100)["levels"][0]["last_played"], "2026-09-23T00:00:00Z")
 
+    def test_leaderboard_refresh_is_rate_limited_by_client(self):
+        board = "official-rate-limit-test"
+        player_id = "rate-limit-player-001"
+        client_id = "rate-limit-client-001"
+        submit(
+            self.payload(
+                "00000000-0000-0000-0000-000000000099",
+                player_id,
+                board,
+                900,
+                9,
+            )
+        )
+        try:
+            response = leaderboard(
+                board,
+                players=2,
+                metric="score",
+                player_id=player_id,
+                limit=100,
+                around=100,
+                assistance="all",
+                client_id=client_id,
+            )
+            self.assertEqual(response["self_rank"], 1)
+            with self.assertRaises(app_module.HTTPException) as caught:
+                leaderboard(
+                    board,
+                    players=2,
+                    metric="score",
+                    player_id=player_id,
+                    limit=100,
+                    around=100,
+                    assistance="all",
+                    client_id=client_id,
+                )
+            self.assertEqual(caught.exception.status_code, 429)
+        finally:
+            app_module._leaderboard_request_times.pop(client_id, None)
+
     def test_duplicate_submission_is_idempotent(self):
         payload = self.payload(
             "00000000-0000-0000-0000-000000000010",

@@ -66,6 +66,7 @@ namespace Overrank
             int players,
             string metric,
             string playerId,
+            string clientId,
             string assistance,
             Action<LeaderboardResponse, string> callback)
         {
@@ -74,6 +75,7 @@ namespace Overrank
                 + "?players=" + players
                 + "&metric=" + UnityWebRequest.EscapeURL(metric)
                 + "&player_id=" + UnityWebRequest.EscapeURL(playerId)
+                + "&client_id=" + UnityWebRequest.EscapeURL(clientId)
                 + "&assistance=" + UnityWebRequest.EscapeURL(assistance)
                 + "&limit=100&around=100";
             _host.StartCoroutine(GetJson(url, callback));

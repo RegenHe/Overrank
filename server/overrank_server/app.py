@@ -34,6 +34,7 @@ ROOM_MEMBER_TTL_SECONDS = 65
 ROOM_MESSAGE_LIMIT = 100
 ROOM_LIST_LIMIT = 100
 ROOM_LIST_MIN_INTERVAL_SECONDS = 1.0
+LEADERBOARD_MIN_INTERVAL_SECONDS = 1.0
 LOBBY_MESSAGE_TTL_SECONDS = 4 * 60 * 60
 LOBBY_MESSAGE_RATE_LIMIT = 10
 LOBBY_MESSAGE_RATE_WINDOW_SECONDS = 60
@@ -48,6 +49,9 @@ _rooms: dict[str, dict] = {}
 _room_catalog: dict[str, int] = {"revision": 1}
 _room_list_request_times: dict[str, float] = {}
 _room_list_rate_cleanup_at = 0.0
+_leaderboard_rate_lock = threading.Lock()
+_leaderboard_request_times: dict[str, float] = {}
+_leaderboard_rate_cleanup_at = 0.0
 _lobby_chat: dict[str, object] = {"next_message_id": 1, "messages": []}
 _lobby_message_times: dict[str, list[float]] = {}
 
@@ -748,7 +752,26 @@ def leaderboard(
     around: int = Query(default=100, ge=1, le=100),
     around_overwashed: bool | None = Query(default=None),
     assistance: Assistance = Query(default="all"),
+    client_id: str = Query(default="", max_length=128),
 ) -> dict:
+    global _leaderboard_rate_cleanup_at
+    viewer_client_id = client_id if isinstance(client_id, str) else ""
+    if viewer_client_id:
+        now = time.monotonic()
+        with _leaderboard_rate_lock:
+            previous_request = _leaderboard_request_times.get(viewer_client_id, 0.0)
+            if now - previous_request < LEADERBOARD_MIN_INTERVAL_SECONDS:
+                raise HTTPException(status_code=429, detail="Leaderboard refresh rate limit exceeded")
+            _leaderboard_request_times[viewer_client_id] = now
+            if now >= _leaderboard_rate_cleanup_at:
+                stale_refresh_clients = [
+                    key
+                    for key, requested_at in _leaderboard_request_times.items()
+                    if requested_at < now - PRESENCE_TTL_SECONDS
+                ]
+                for key in stale_refresh_clients:
+                    _leaderboard_request_times.pop(key, None)
+                _leaderboard_rate_cleanup_at = now + PRESENCE_TTL_SECONDS
     order = board_order(metric)
     ranking = rank_order(metric)
     requested_overwashed = around_overwashed if isinstance(around_overwashed, bool) else None

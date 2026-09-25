@@ -113,9 +113,7 @@ namespace Overrank
         private int _lastLobbyMessageId;
         private int _roomListRevision;
         private float _nextRoomRefresh;
-        private float _nextManualRoomRefresh;
-        private float _nextAllowedRoomListRequest;
-        private float _nextManualLeaderboardRefresh;
+        private bool _roomMessageSending;
         private Vector2 _roomListScroll;
         private Vector2 _roomMemberScroll;
         private Vector2 _roomChatScroll;
@@ -839,7 +837,7 @@ namespace Overrank
 
             string networkStatus = _roomPage != 0 && !string.IsNullOrEmpty(_roomError)
                 ? _roomError
-                : (_requestRunning || _roomRequestRunning || _creatingGameLobby)
+                : (_requestRunning || (_roomRequestRunning && !_roomMessageSending) || _creatingGameLobby)
                 ? OverrankText.Get("Loading...", "加载中……")
                 : (!string.IsNullOrEmpty(_requestError)
                     ? _requestError
@@ -869,16 +867,13 @@ namespace Overrank
                 : _selectedLevelName;
             GUI.Label(new Rect(panel.x + 14f, panel.y + 68f, panel.width - 150f, 24f), title);
             bool leaderboardControlsEnabled = GUI.enabled;
-            GUI.enabled = leaderboardControlsEnabled && CanManuallyRefreshLeaderboard();
+            GUI.enabled = leaderboardControlsEnabled && !_requestRunning;
             if (GUI.Button(
                 new Rect(panel.x + panel.width - 94f, panel.y + 66f, 80f, 24f),
                 OverrankText.Get("Refresh", "刷新")))
             {
-                if (BeginManualLeaderboardRefresh())
-                {
-                    ClearLeaderboardCache();
-                    RefreshBoard();
-                }
+                ClearLeaderboardCache();
+                RefreshBoard();
             }
             GUI.enabled = leaderboardControlsEnabled;
 
@@ -890,7 +885,7 @@ namespace Overrank
                 _metric == "score",
                 OverrankText.Get("Score", "分数"))
                 && _metric != "score"
-                && BeginManualLeaderboardRefresh())
+                && !_requestRunning)
             {
                 _metric = "score";
                 _nearbyMode = 0;
@@ -901,7 +896,7 @@ namespace Overrank
                 _metric == "dishes",
                 OverrankText.Get("Dishes", "菜数"))
                 && _metric != "dishes"
-                && BeginManualLeaderboardRefresh())
+                && !_requestRunning)
             {
                 _metric = "dishes";
                 _nearbyMode = 0;
@@ -918,7 +913,7 @@ namespace Overrank
                     _players == count,
                     count.ToString())
                     && _players != count
-                    && BeginManualLeaderboardRefresh())
+                    && !_requestRunning)
                 {
                     _players = count;
                     _lastPlayerCount.Value = count;
@@ -1032,25 +1027,14 @@ namespace Overrank
             {
                 selectedRank = _leaderboard.self_rank;
             }
-            bool canSwitch = CanManuallyRefreshLeaderboard() && HasAnyPersonalRank();
+            bool canSwitch = !_requestRunning && !string.IsNullOrEmpty(_selectedLevelKey);
             bool previousEnabled = GUI.enabled;
             GUI.enabled = previousEnabled && canSwitch;
             if (GUI.Button(area, label + " " + (selectedRank <= 0 ? "--" : "#" + selectedRank)))
             {
-                if (BeginManualLeaderboardRefresh())
-                {
-                    SwitchNearbyMode();
-                }
+                SwitchNearbyMode();
             }
             GUI.enabled = previousEnabled;
-        }
-
-        private bool HasAnyPersonalRank()
-        {
-            return (_leaderboard != null && _leaderboard.self_rank > 0)
-                || (_overallLeaderboard != null && _overallLeaderboard.self_rank > 0)
-                || (_unassistedLeaderboard != null && _unassistedLeaderboard.self_rank > 0)
-                || (_assistedLeaderboard != null && _assistedLeaderboard.self_rank > 0);
         }
 
         private void CenterNearbyOnSelectedEntry(Rect area, LeaderboardEntry[] entries)
@@ -1243,13 +1227,12 @@ namespace Overrank
             }
             GUI.enabled = lobbyControlsEnabled;
             GUI.enabled = lobbyControlsEnabled
-                && !_roomRefreshRunning
-                && Time.unscaledTime >= _nextManualRoomRefresh;
+                && !_roomRefreshRunning;
             if (GUI.Button(
                 new Rect(roomsX + roomsWidth - 80f, panel.y + 66f, 80f, 24f),
                 OverrankText.Get("Refresh", "刷新")))
             {
-                RefreshRooms(true);
+                RefreshRooms();
             }
             GUI.enabled = lobbyControlsEnabled;
             GUI.Label(
@@ -1294,6 +1277,8 @@ namespace Overrank
                             true);
                     }
                     float buttonWidth = 98f;
+                    float buttonHeight = 24f;
+                    float buttonX = content.width - buttonWidth - 6f;
                     float statusWidth = 122f;
                     float statusX = content.width - buttonWidth - statusWidth - 14f;
                     GUI.Label(
@@ -1334,7 +1319,7 @@ namespace Overrank
                         && !full
                         && !playing;
                     if (GUI.Button(
-                        new Rect(content.width - buttonWidth - 6f, y + 5f, buttonWidth, 26f),
+                        new Rect(buttonX, y + 5f, buttonWidth, buttonHeight),
                         currentRoom
                             ? OverrankText.Get("Current", "当前房间")
                             : playing
@@ -1349,7 +1334,7 @@ namespace Overrank
                     bool copyEnabled = GUI.enabled;
                     GUI.enabled = copyEnabled && !string.IsNullOrEmpty(room.room_id);
                     if (GUI.Button(
-                        new Rect(content.width - 92f, y + 34f, 86f, 21f),
+                        new Rect(buttonX, y + 32f, buttonWidth, buttonHeight),
                         OverrankText.Get("Copy ID", "复制房间号")))
                     {
                         GUIUtility.systemCopyBuffer = room.room_id;
@@ -1357,7 +1342,7 @@ namespace Overrank
                     }
                     GUI.enabled = copyEnabled;
                     GUI.Label(
-                        new Rect(28f, y + 34f, content.width - 94f, 20f),
+                        new Rect(28f, y + 34f, Mathf.Max(40f, buttonX - 34f), 20f),
                         Truncate(room.description, 45));
                 }
                 GUI.EndScrollView();
@@ -1825,27 +1810,9 @@ namespace Overrank
 
         private void RefreshRooms()
         {
-            RefreshRooms(false);
-        }
-
-        private void RefreshRooms(bool manual)
-        {
             if (_client == null || _roomRequestRunning || _roomRefreshRunning)
             {
                 return;
-            }
-            if (Time.unscaledTime < _nextAllowedRoomListRequest)
-            {
-                return;
-            }
-            if (manual && Time.unscaledTime < _nextManualRoomRefresh)
-            {
-                return;
-            }
-            _nextAllowedRoomListRequest = Time.unscaledTime + 1f;
-            if (manual)
-            {
-                _nextManualRoomRefresh = Time.unscaledTime + 1f;
             }
             _roomRefreshRunning = true;
             _roomError = null;
@@ -2253,6 +2220,7 @@ namespace Overrank
             }
             string roomId = _currentRoomId;
             _roomRequestRunning = true;
+            _roomMessageSending = true;
             _client.SendRoomMessage(
                 roomId,
                 new RoomMessageRequest
@@ -2265,6 +2233,7 @@ namespace Overrank
                 delegate(RoomInfo room, string error)
                 {
                     _roomRequestRunning = false;
+                    _roomMessageSending = false;
                     if (!string.Equals(roomId, _currentRoomId, StringComparison.Ordinal))
                     {
                         return;
@@ -2293,6 +2262,7 @@ namespace Overrank
                 return;
             }
             _roomRequestRunning = true;
+            _roomMessageSending = true;
             _client.SendLobbyMessage(
                 new RoomMessageRequest
                 {
@@ -2304,6 +2274,7 @@ namespace Overrank
                 delegate(LobbyChatResponse response, string error)
                 {
                     _roomRequestRunning = false;
+                    _roomMessageSending = false;
                     if (!string.IsNullOrEmpty(error) || response == null)
                     {
                         _roomError = LobbyChatErrorLabel(error);
@@ -2883,6 +2854,19 @@ namespace Overrank
             return error;
         }
 
+        private static string LeaderboardErrorLabel(string error)
+        {
+            if (!string.IsNullOrEmpty(error)
+                && (error.IndexOf("Leaderboard refresh rate limit exceeded", StringComparison.OrdinalIgnoreCase) >= 0
+                    || error.IndexOf("HTTP 429", StringComparison.OrdinalIgnoreCase) >= 0))
+            {
+                return OverrankText.Get(
+                    "Refreshing too quickly. Please wait a moment.",
+                    "刷新过快，请稍后再试");
+            }
+            return error;
+        }
+
         private static bool HasDuplicateLabel(PlayedLevel[] levels, int currentIndex, string label)
         {
             for (int index = 0; index < levels.Length; index++)
@@ -2934,11 +2918,12 @@ namespace Overrank
                 _players,
                 _metric,
                 _playerId,
+                _clientId,
                 assistance,
                 delegate(LeaderboardResponse response, string error)
                 {
                     _requestRunning = false;
-                    _requestError = error;
+                    _requestError = LeaderboardErrorLabel(error);
                     if (response != null)
                     {
                         if (!string.Equals(requestKey, CurrentLeaderboardCacheKey(), StringComparison.Ordinal))
@@ -2950,21 +2935,6 @@ namespace Overrank
                         ApplyLeaderboard(response, true);
                     }
                 });
-        }
-
-        private bool CanManuallyRefreshLeaderboard()
-        {
-            return !_requestRunning && Time.unscaledTime >= _nextManualLeaderboardRefresh;
-        }
-
-        private bool BeginManualLeaderboardRefresh()
-        {
-            if (!CanManuallyRefreshLeaderboard())
-            {
-                return false;
-            }
-            _nextManualLeaderboardRefresh = Time.unscaledTime + 1f;
-            return true;
         }
 
         private string CurrentLeaderboardCacheKey()
