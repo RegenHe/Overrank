@@ -190,6 +190,7 @@ namespace Overrank
         public string player_id;
         public string player_name;
         public string password;
+        public bool confirm;
     }
 
     [Serializable]

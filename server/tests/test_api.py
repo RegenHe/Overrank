@@ -694,6 +694,19 @@ class OverrankApiTests(unittest.TestCase):
             )
         self.assertEqual(wrong_password.exception.status_code, 403)
 
+        prepared = join_room(
+            room_id,
+            RoomJoin(
+                client_id="room-guest-client-01",
+                player_id="room-guest-player-01",
+                player_name="Guest",
+                password="secret",
+                confirm=False,
+            ),
+        )
+        self.assertEqual(prepared["lobby_id"], "109775241234567890")
+        self.assertEqual(prepared["member_count"], 1)
+
         joined = join_room(
             room_id,
             RoomJoin(
@@ -961,6 +974,37 @@ class OverrankApiTests(unittest.TestCase):
                 ),
             )
         self.assertEqual(rejoin_rejected.exception.status_code, 403)
+
+    def test_stale_room_host_expires_after_thirty_seconds(self):
+        app_module._rooms.clear()
+        app_module._room_list_request_times.clear()
+        created = create_room(
+            RoomCreate(
+                client_id="stale-host-client-0001",
+                player_id="stale-host-player-0001",
+                player_name="Host",
+                title="Stale room",
+                lobby_id="109775241234567895",
+                game_player_count=1,
+            )
+        )
+        room_id = created["room_id"]
+        app_module._rooms[room_id]["host_seen_at"] = (
+            time.time() - app_module.ROOM_TTL_SECONDS - 1
+        )
+
+        self.assertEqual(list_rooms()["rooms"], [])
+        with self.assertRaises(app_module.HTTPException) as expired:
+            join_room(
+                room_id,
+                RoomJoin(
+                    client_id="stale-guest-client-01",
+                    player_id="stale-guest-player-01",
+                    player_name="Guest",
+                    confirm=False,
+                ),
+            )
+        self.assertEqual(expired.exception.status_code, 404)
 
     def test_room_list_refresh_is_rate_limited_per_client(self):
         app_module._room_list_request_times.clear()

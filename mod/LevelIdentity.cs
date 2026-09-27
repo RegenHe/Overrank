@@ -3,6 +3,7 @@ using System.Collections;
 using System.Reflection;
 using System.Security.Cryptography;
 using System.Text;
+using System.Text.RegularExpressions;
 using UnityEngine;
 using UnityEngine.SceneManagement;
 
@@ -10,6 +11,9 @@ namespace Overrank
 {
     internal sealed class LevelIdentity
     {
+        private static readonly Regex RichTextTag = new Regex(
+            @"</?[A-Za-z][^<>]*>");
+
         internal string Uid;
         internal int DlcId;
         internal int LevelId;
@@ -175,33 +179,40 @@ namespace Overrank
             {
                 if (Localization.GetLanguage() == SupportedLanguages.Chinese && !string.IsNullOrEmpty(chinese))
                 {
-                    return chinese;
+                    return StripRichText(chinese);
                 }
             }
             catch
             {
             }
-            return english;
+            return StripRichText(english);
         }
 
         private static string LocalizeLabel(string label)
         {
             if (string.IsNullOrEmpty(label) || !label.StartsWith("Text.", StringComparison.Ordinal))
             {
-                return label;
+                return StripRichText(label);
             }
             try
             {
                 string localized = Localization.Get(label);
                 if (!string.IsNullOrEmpty(localized) && !localized.StartsWith("MT[", StringComparison.Ordinal))
                 {
-                    return localized;
+                    return StripRichText(localized);
                 }
             }
             catch
             {
             }
-            return label;
+            return StripRichText(label);
+        }
+
+        private static string StripRichText(string value)
+        {
+            return string.IsNullOrEmpty(value)
+                ? value
+                : RichTextTag.Replace(value, string.Empty).Trim();
         }
 
         private static object ReadMember(object instance, string name)

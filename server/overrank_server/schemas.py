@@ -171,6 +171,7 @@ class RoomJoin(BaseModel):
     player_id: str = Field(min_length=16, max_length=128)
     player_name: str = Field(min_length=1, max_length=64)
     password: str = Field(default="", max_length=32)
+    confirm: bool = True
 
     @field_validator("player_name", mode="before")
     @classmethod

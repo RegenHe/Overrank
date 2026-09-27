@@ -30,8 +30,8 @@ from .schemas import (
 
 PRESENCE_TTL_SECONDS = 150
 ROUND_TTL_SECONDS = 20 * 60
-ROOM_TTL_SECONDS = 180
-ROOM_MEMBER_TTL_SECONDS = 180
+ROOM_TTL_SECONDS = 30
+ROOM_MEMBER_TTL_SECONDS = 30
 ROOM_MESSAGE_LIMIT = 100
 ROOM_LIST_LIMIT = 100
 ROOM_LIST_MIN_INTERVAL_SECONDS = 0.5
@@ -521,6 +521,8 @@ def join_room(room_id: str, payload: RoomJoin) -> dict:
         supplied = _password_hash(payload.password)
         if expected and not hmac.compare_digest(expected, supplied):
             raise HTTPException(status_code=403, detail="Incorrect room password")
+        if not payload.confirm:
+            return _room_response(state, include_lobby=True)
         for other_id, other in _rooms.items():
             if other_id == room_id or payload.client_id not in other["members"]:
                 continue

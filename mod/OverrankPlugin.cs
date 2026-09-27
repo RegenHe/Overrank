@@ -96,9 +96,9 @@ namespace Overrank
         private float _nextGameLobbyCheck;
         private RoomInfo _pendingJoinedRoom;
         private ulong _pendingSteamLobbyId;
+        private bool _pendingSteamLobbyJoinConfirming;
         private float _steamLobbyJoinDeadline;
         private float _nextSteamLobbyJoinCheck;
-        private float _nextPendingJoinHeartbeat;
         private string _roomError;
         private string _createRoomTitle;
         private string _createRoomDescription;
@@ -819,7 +819,9 @@ namespace Overrank
                 RefreshRooms();
             }
             bool tabsEnabled = GUI.enabled;
-            GUI.enabled = tabsEnabled && string.IsNullOrEmpty(_currentRoomId);
+            GUI.enabled = tabsEnabled
+                && string.IsNullOrEmpty(_currentRoomId)
+                && _pendingJoinedRoom == null;
             if (GUI.Button(
                 new Rect(panel.x + 624f, panel.y + 32f, 112f, 26f),
                 OverrankText.Get("Create room", "创建房间")))
@@ -1242,9 +1244,9 @@ namespace Overrank
             float tableWidth = panel.width - 28f;
             const float rankWidth = 42f;
             const float idWidth = 62f;
-            const float labelWidth = 250f;
-            const float scoreWidth = 205f;
-            const float dishesWidth = 205f;
+            const float labelWidth = 300f;
+            const float scoreWidth = 180f;
+            const float dishesWidth = 180f;
             float playsWidth = tableWidth - rankWidth - idWidth - labelWidth - scoreWidth - dishesWidth;
             float headerY = panel.y + 96f;
             DrawStatisticCell(tableX, headerY, rankWidth, OverrankText.Get("Rank", "排名"));
@@ -1282,11 +1284,27 @@ namespace Overrank
             {
                 PopularLevelEntry entry = entries[index];
                 float y = headerY + 25f + index * rowHeight;
-                GUI.Box(new Rect(tableX, y, tableWidth, rowHeight - 2f), string.Empty);
                 string levelLabel = string.IsNullOrEmpty(entry.level_label)
                     ? entry.level_name
                     : entry.level_label;
                 levelLabel = LevelIdentity.ResolveDisplayName(entry.level_key, levelLabel);
+                bool rowEnabled = GUI.enabled;
+                GUI.enabled = rowEnabled && !_requestRunning;
+                if (GUI.Button(
+                    new Rect(tableX, y, tableWidth, rowHeight - 2f),
+                    string.Empty))
+                {
+                    _selectedLevelKey = entry.level_key;
+                    _selectedLevelName = levelLabel;
+                    _lastLevelKey.Value = _selectedLevelKey;
+                    _lastLevelName.Value = _selectedLevelName;
+                    _nearbyMode = 0;
+                    _showLevels = false;
+                    _showStatistics = false;
+                    ClearLeaderboardCache();
+                    RefreshBoard();
+                }
+                GUI.enabled = rowEnabled;
                 DrawStatisticCell(tableX, y + 3f, rankWidth, "#" + entry.rank);
                 DrawStatisticCell(
                     tableX + rankWidth,
@@ -1297,7 +1315,7 @@ namespace Overrank
                     tableX + rankWidth + idWidth,
                     y + 3f,
                     labelWidth,
-                    Truncate(levelLabel, 22));
+                    Truncate(levelLabel, 32));
                 DrawStatisticCell(
                     tableX + rankWidth + idWidth + labelWidth,
                     y + 3f,
@@ -1586,6 +1604,26 @@ namespace Overrank
         {
             bool enterPressed = IsEnterPressed();
             _roomMessageUnread = false;
+            if (_pendingJoinedRoom != null)
+            {
+                GUI.Label(
+                    new Rect(panel.x + 14f, panel.y + 70f, panel.width - 150f, 24f),
+                    OverrankText.Get(
+                        "Joining Steam game lobby...",
+                        "正在加入 Steam 游戏战局……"));
+                GUI.Label(
+                    new Rect(panel.x + 14f, panel.y + 102f, panel.width - 28f, 24f),
+                    "#" + _pendingJoinedRoom.room_id + "  " + Truncate(_pendingJoinedRoom.title, 42));
+                if (GUI.Button(
+                    new Rect(panel.x + 14f, panel.y + 139f, 120f, 27f),
+                    OverrankText.Get("Cancel joining", "取消加入")))
+                {
+                    CancelPendingSteamLobbyJoin(OverrankText.Get(
+                        "Joining was cancelled.",
+                        "已取消加入房间"));
+                }
+                return;
+            }
             if (_currentRoom == null || string.IsNullOrEmpty(_currentRoomId))
             {
                 GUI.Label(
@@ -2076,7 +2114,8 @@ namespace Overrank
                     client_id = _clientId,
                     player_id = _playerId,
                     player_name = _playerName,
-                    password = _joinRoomPassword ?? string.Empty
+                    password = _joinRoomPassword ?? string.Empty,
+                    confirm = false
                 },
                 delegate(RoomInfo room, string error)
                 {
@@ -2097,17 +2136,14 @@ namespace Overrank
                         _roomError = OverrankText.Get(
                             "Could not join the Steam game: ",
                             "无法加入 Steam 游戏：") + joinError;
-                        _client.LeaveRoom(
-                            room.room_id,
-                            new RoomLeaveRequest { client_id = _clientId, host_token = string.Empty },
-                            null);
                         return;
                     }
                     _pendingJoinedRoom = room;
                     _pendingSteamLobbyId = lobbyId;
-                    _steamLobbyJoinDeadline = Time.unscaledTime + 60f;
+                    _pendingSteamLobbyJoinConfirming = false;
+                    _steamLobbyJoinDeadline = Time.unscaledTime + 15f;
                     _nextSteamLobbyJoinCheck = 0f;
-                    _nextPendingJoinHeartbeat = 0f;
+                    _roomPage = 1;
                 });
         }
 
@@ -2168,7 +2204,9 @@ namespace Overrank
 
         private void UpdatePendingSteamLobbyJoin()
         {
-            if (_pendingJoinedRoom == null || Time.unscaledTime < _nextSteamLobbyJoinCheck)
+            if (_pendingJoinedRoom == null
+                || _pendingSteamLobbyJoinConfirming
+                || Time.unscaledTime < _nextSteamLobbyJoinCheck)
             {
                 return;
             }
@@ -2179,65 +2217,39 @@ namespace Overrank
             if (SessionContext.TryReadLobby(out currentLobbyId, out ignoredLobbyKey, out ignoredMemberCount)
                 && currentLobbyId == _pendingSteamLobbyId)
             {
-                RoomInfo joinedRoom = _pendingJoinedRoom;
-                ClearPendingSteamLobbyJoin();
-                _roomRequestRunning = false;
-                SetCurrentRoom(joinedRoom, false, string.Empty);
-                _roomPage = 1;
-                _joinRoomPassword = string.Empty;
-                _nextRoomRefresh = Time.unscaledTime + 2.5f;
-                _roomError = null;
+                FinalisePendingSteamLobbyJoin();
                 return;
             }
             if (Time.unscaledTime < _steamLobbyJoinDeadline)
             {
-                SendPendingJoinHeartbeat();
                 return;
             }
 
-            string roomId = _pendingJoinedRoom.room_id;
-            ClearPendingSteamLobbyJoin();
-            _roomError = OverrankText.Get(
+            CancelPendingSteamLobbyJoin(OverrankText.Get(
                 "Could not enter the game lobby. Please try again.",
-                "未能进入游戏战局，请重试");
-            _client.LeaveRoom(
-                roomId,
-                new RoomLeaveRequest { client_id = _clientId, host_token = string.Empty },
-                delegate(RoomLeaveResponse response, string error)
-                {
-                    _roomRequestRunning = false;
-                });
+                "未能进入游戏战局，请重试"));
         }
 
-        private void SendPendingJoinHeartbeat()
+        private void FinalisePendingSteamLobbyJoin()
         {
-            if (_client == null
-                || _pendingJoinedRoom == null
-                || _roomHeartbeatRunning
-                || Time.unscaledTime < _nextPendingJoinHeartbeat)
+            if (_client == null || _pendingJoinedRoom == null || _pendingSteamLobbyJoinConfirming)
             {
                 return;
             }
-            _nextPendingJoinHeartbeat = Time.unscaledTime + 20f;
             string roomId = _pendingJoinedRoom.room_id;
-            _roomHeartbeatRunning = true;
-            _client.SendRoomHeartbeat(
+            _pendingSteamLobbyJoinConfirming = true;
+            _client.JoinRoom(
                 roomId,
-                new RoomHeartbeatRequest
+                new RoomJoinRequest
                 {
                     client_id = _clientId,
                     player_id = _playerId,
                     player_name = _playerName,
-                    host_token = string.Empty,
-                    lobby_id = string.Empty,
-                    game_player_count = CurrentGamePlayerCount(),
-                    game_player_limit = 4,
-                    status = CurrentRoomStatus(),
-                    last_message_id = NewestMessageId(_pendingJoinedRoom.messages)
+                    password = _joinRoomPassword ?? string.Empty,
+                    confirm = true
                 },
                 delegate(RoomInfo room, string error)
                 {
-                    _roomHeartbeatRunning = false;
                     if (_pendingJoinedRoom == null
                         || !string.Equals(roomId, _pendingJoinedRoom.room_id, StringComparison.Ordinal))
                     {
@@ -2245,29 +2257,36 @@ namespace Overrank
                     }
                     if (!string.IsNullOrEmpty(error) || room == null)
                     {
-                        if (!string.IsNullOrEmpty(error)
-                            && (error.IndexOf("HTTP 404", StringComparison.OrdinalIgnoreCase) >= 0
-                                || error.IndexOf("HTTP 409", StringComparison.OrdinalIgnoreCase) >= 0))
-                        {
-                            ClearPendingSteamLobbyJoin();
-                            _roomRequestRunning = false;
-                            _roomError = RoomErrorLabel(error);
-                        }
+                        CancelPendingSteamLobbyJoin(RoomErrorLabel(error));
                         return;
                     }
-                    room.messages = MergeMessages(_pendingJoinedRoom.messages, room.messages);
-                    _pendingJoinedRoom = room;
+                    ClearPendingSteamLobbyJoin();
+                    _roomRequestRunning = false;
+                    SetCurrentRoom(room, false, string.Empty);
+                    _roomPage = 1;
+                    _joinRoomPassword = string.Empty;
+                    _nextRoomRefresh = Time.unscaledTime + 2.5f;
+                    _roomError = null;
                 });
+        }
+
+        private void CancelPendingSteamLobbyJoin(string error)
+        {
+            ClearPendingSteamLobbyJoin();
+            _roomRequestRunning = false;
+            RequestLeaveGameLobby();
+            _roomError = error;
+            _roomPage = 2;
+            _nextRoomRefresh = 0f;
         }
 
         private void ClearPendingSteamLobbyJoin()
         {
             _pendingJoinedRoom = null;
             _pendingSteamLobbyId = 0UL;
+            _pendingSteamLobbyJoinConfirming = false;
             _steamLobbyJoinDeadline = 0f;
             _nextSteamLobbyJoinCheck = 0f;
-            _nextPendingJoinHeartbeat = 0f;
-            _roomHeartbeatRunning = false;
         }
 
         private void SendRoomHeartbeat()
@@ -2291,7 +2310,7 @@ namespace Overrank
                 out observedLobbyId,
                 out ignoredLobbyKey,
                 out ignoredMemberCount);
-            string roomStatus = hasLobby ? CurrentRoomStatus() : "playing";
+            string roomStatus = CurrentRoomStatus();
             bool lobbyMatches = expectedLobbyId == 0UL || observedLobbyId == expectedLobbyId;
             if (hasLobby
                 && !lobbyMatches
@@ -2763,13 +2782,18 @@ namespace Overrank
 
         private static string CurrentRoomStatus()
         {
-            LevelIdentity activeLevel;
-            if (TryReadActiveLevel(out activeLevel))
+            try
+            {
+                string sceneName = UnityEngine.SceneManagement.SceneManager.GetActiveScene().name;
+                return string.Equals(sceneName, "StartScreen", StringComparison.OrdinalIgnoreCase)
+                    || string.Equals(sceneName, "Lobbies", StringComparison.OrdinalIgnoreCase)
+                    ? "lobby"
+                    : "playing";
+            }
+            catch
             {
                 return "playing";
             }
-            FrontendPlayerLobby playerLobby = FindFrontendPlayerLobby();
-            return playerLobby != null && playerLobby.isActiveAndEnabled ? "lobby" : "playing";
         }
 
         private static string RoomStatusLabel(string status)
