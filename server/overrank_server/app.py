@@ -12,6 +12,7 @@ from fastapi import Depends, FastAPI, Header, HTTPException, Query
 from .database import connect, initialise, save_submission
 from .schemas import (
     Assistance,
+    LevelKeyQuery,
     Metric,
     Presence,
     RoundAssistance,
@@ -93,6 +94,24 @@ async def lifespan(_: FastAPI):
 
 
 app = FastAPI(title="Overrank", version="2.0.0", lifespan=lifespan)
+
+
+@app.post("/api/v1/levels/known", dependencies=[Depends(require_api_key)])
+def known_levels(payload: LevelKeyQuery) -> dict:
+    placeholders = ",".join("?" for _ in payload.level_keys)
+    with connect() as connection:
+        rows = connection.execute(
+            f"""
+            SELECT DISTINCT level_key
+            FROM player_levels
+            WHERE level_key IN ({placeholders})
+            """,
+            payload.level_keys,
+        ).fetchall()
+    known = {str(row["level_key"]) for row in rows}
+    return {
+        "level_keys": [key for key in payload.level_keys if key in known],
+    }
 
 
 def _active_presence(now: float | None = None) -> list[dict]:

@@ -17,6 +17,7 @@ from overrank_server.app import (  # noqa: E402
     create_room,
     join_room,
     join_round,
+    known_levels,
     kick_room_member,
     leaderboard,
     leave_room,
@@ -34,6 +35,7 @@ from overrank_server.app import (  # noqa: E402
 from overrank_server.database import connect, create_schema, initialise  # noqa: E402
 from overrank_server.schemas import (  # noqa: E402
     Presence,
+    LevelKeyQuery,
     RoomCreate,
     RoomHeartbeat,
     RoomJoin,
@@ -58,6 +60,39 @@ class OverrankApiTests(unittest.TestCase):
     def tearDownClass(cls):
         if TEST_ROOT.exists():
             shutil.rmtree(TEST_ROOT)
+
+    def test_known_levels_returns_only_existing_full_keys(self):
+        with connect() as connection:
+            connection.execute(
+                """
+                INSERT OR REPLACE INTO player_levels (
+                    player_id, level_key, player_name, dlc_id, level_id,
+                    level_name, level_label, last_played,
+                    last_submission_id, updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+                """,
+                (
+                    "known-level-player",
+                    "oc2diy-known-full-key",
+                    "Chef",
+                    15,
+                    1,
+                    "known_scene",
+                    "Known collection / Known level",
+                    "2026-09-28T00:00:00Z",
+                    "known-submission",
+                ),
+            )
+        result = known_levels(
+            LevelKeyQuery(
+                level_keys=[
+                    "oc2diy-missing-full-key",
+                    "oc2diy-known-full-key",
+                    "oc2diy-known-full-key",
+                ]
+            )
+        )
+        self.assertEqual(result["level_keys"], ["oc2diy-known-full-key"])
 
     def payload(
         self,

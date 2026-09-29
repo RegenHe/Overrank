@@ -229,5 +229,23 @@ class RoomKick(BaseModel):
     target_client_id: str = Field(min_length=16, max_length=128)
 
 
+class LevelKeyQuery(BaseModel):
+    level_keys: list[str] = Field(min_length=1, max_length=500)
+
+    @field_validator("level_keys")
+    @classmethod
+    def clean_level_keys(cls, values: list[str]) -> list[str]:
+        cleaned: list[str] = []
+        seen: set[str] = set()
+        for value in values:
+            level_key = plain_text(value)
+            if not level_key or len(level_key) > 96:
+                raise ValueError("Each level key must contain 1 to 96 characters")
+            if level_key not in seen:
+                cleaned.append(level_key)
+                seen.add(level_key)
+        return cleaned
+
+
 Metric = Literal["score", "dishes"]
 Assistance = Literal["all", "unassisted", "assisted"]

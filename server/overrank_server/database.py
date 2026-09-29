@@ -138,6 +138,8 @@ def create_schema(connection: sqlite3.Connection) -> None:
             ON personal_bests(level_key, player_count, metric, dishes DESC, score DESC, completed_at ASC);
         CREATE INDEX IF NOT EXISTS idx_player_levels_recent
             ON player_levels(player_id, last_played DESC);
+        CREATE INDEX IF NOT EXISTS idx_player_levels_level_key
+            ON player_levels(level_key);
         CREATE INDEX IF NOT EXISTS idx_recent_level_plays_time
             ON recent_level_plays(played_at, level_key);
         """
