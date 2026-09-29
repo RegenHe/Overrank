@@ -9,6 +9,7 @@ from uuid import uuid4
 
 from fastapi import Depends, FastAPI, Header, HTTPException, Query
 
+from . import __version__
 from .database import connect, initialise, save_submission
 from .schemas import (
     Assistance,
@@ -93,7 +94,7 @@ async def lifespan(_: FastAPI):
     yield
 
 
-app = FastAPI(title="Overrank", version="2.0.0", lifespan=lifespan)
+app = FastAPI(title="Overrank", version=__version__, lifespan=lifespan)
 
 
 @app.post("/api/v1/levels/known", dependencies=[Depends(require_api_key)])
